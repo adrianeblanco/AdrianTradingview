@@ -1,28 +1,9 @@
 // src/components/drawing/DrawingsOverlay.tsx
 "use client";
-//
-// PROBLEMA QUE ARREGLA ESTA VERSIÓN
-// ================================
-// La v2 ponía pointer-events="auto" siempre en el SVG, lo que capturaba
-// TODOS los clicks y el chart no recibía nada (no podías hacer pan/zoom).
-//
-// SOLUCIÓN
-// ========
-// Pointer-events DINÁMICO:
-//   - "none" cuando: no hay tool activa, no estás arrastrando, y no hay
-//     hover sobre un dibujo. Los clicks pasan al chart de abajo.
-//   - "auto" cuando: hay tool activa, drag activo, o hover sobre dibujo.
-//     El SVG captura clicks.
-//
-// HOVER DETECTION SIN BLOQUEAR
-// ============================
-// Para saber si el cursor está sobre un dibujo SIN bloquear el chart,
-// usamos un mousemove listener en el contenedor padre (que es absolute
-// inset-0 pointer-events-none, NO captura clicks pero sí mousemove desde
-// abajo del SVG porque el chart está debajo y el evento burbujea).
-//
-// Truco: pongo un segundo elemento <div> arriba del SVG con
-// pointer-events: none que SOLO escucha mousemove para tracking.
+// v4 changes vs v3:
+//  - Durante drag usa liveDrag() (sin history). Al soltar, commitDrag() pushea
+//    una sola entrada de historia. Antes cada pixel hacía una entry → spam.
+//  - Pasa endTime a las órdenes para que se respete
 
 import { useEffect, useRef, useState } from "react";
 import type { IChartApi, ISeriesApi, Time } from "lightweight-charts";
@@ -42,9 +23,7 @@ type Props = {
   candles: Candle[];
 };
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
+function uid() { return Math.random().toString(36).slice(2, 10); }
 
 type DragState =
   | { mode: "none" }
@@ -56,8 +35,11 @@ type DrawingInProgress = { p1: Point };
 export function DrawingsOverlay({ chart, series, candles }: Props) {
   const drawings        = useChartStore(s => s.drawings);
   const addDrawing      = useChartStore(s => s.addDrawing);
-  const replaceDrawing  = useChartStore(s => s.replaceDrawing);
+  const liveDrag        = useChartStore(s => s.liveDrag);
+  const commitDrag      = useChartStore(s => s.commitDrag);
   const removeDrawing   = useChartStore(s => s.removeDrawing);
+  const undo            = useChartStore(s => s.undo);
+  const redo            = useChartStore(s => s.redo);
   const activeTool      = useChartStore(s => s.activeTool);
   const setActiveTool   = useChartStore(s => s.setActiveTool);
   const selectedId      = useChartStore(s => s.selectedDrawingId);
@@ -74,7 +56,6 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
   const [keys, setKeys] = useState({ ctrl: false, shift: false });
   const [hoveredDrawingId, setHoveredDrawingId] = useState<string | null>(null);
 
-  // Forzar redibujo en pan/zoom
   const [, tick] = useState(0);
   useEffect(() => {
     const handler = () => tick(n => n + 1);
@@ -82,7 +63,6 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     return () => chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
   }, [chart]);
 
-  // Tamaño del SVG
   useEffect(() => {
     if (!wrapperRef.current) return;
     const ro = new ResizeObserver((entries) => {
@@ -93,22 +73,30 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // Hotkeys
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       setKeys({ ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+      const t = e.target as HTMLElement;
+      const inInput = t.tagName === "INPUT" || t.tagName === "TEXTAREA";
+      if (inInput) return;
+
       if (e.key === "Escape") {
         setActiveTool("none");
         setPending(null);
         setSelectedId(null);
       }
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        // Solo si el foco NO está en un input
-        const t = e.target as HTMLElement;
-        if (t.tagName !== "INPUT" && t.tagName !== "TEXTAREA") {
-          removeDrawing(selectedId);
-          setSelectedId(null);
-        }
+        removeDrawing(selectedId);
+        setSelectedId(null);
+      }
+      // Undo/Redo
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo(); else undo();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo();
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -120,9 +108,8 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [selectedId, removeDrawing, setSelectedId, setActiveTool]);
+  }, [selectedId, removeDrawing, setSelectedId, setActiveTool, undo, redo]);
 
-  // Helpers
   const toXY: ToXY = (time, price) => {
     const x = chart.timeScale().timeToCoordinate(time as Time);
     const y = series.priceToCoordinate(price);
@@ -155,18 +142,12 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     return p;
   };
 
-  // ----------- HOVER TRACKING (sin capturar clicks) -----------
-  // Este listener vive en el wrapper que es pointer-events: none por defecto.
-  // No bloquea el chart pero podemos detectar la posición del cursor mientras
-  // se mueve sobre el área del chart.
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
-    // Listener en el window para captar movimiento aunque el wrapper sea passthrough
     const onMove = (e: MouseEvent) => {
       const local = getLocalXY(e.clientX, e.clientY);
       if (!local) return;
-      // Sólo actualizamos si está dentro del wrapper
       if (
         local.x < 0 || local.x > chartSize.w ||
         local.y < 0 || local.y > chartSize.h
@@ -177,7 +158,6 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       }
       setCursor(local);
 
-      // Drag activo: mover y SALIR
       if (drag.mode !== "none") {
         const p = fromXY(local.x, local.y);
         if (!p) return;
@@ -190,19 +170,16 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
             const s = snapToHighLow(p, candles);
             if (s) snapped = s.point;
           }
-          replaceDrawing(drag.drawingId, moveHandle(target, drag.handle, snapped));
+          liveDrag(drag.drawingId, moveHandle(target, drag.handle, snapped));
         } else if (drag.mode === "body") {
-          // Delta 1:1 desde la última posición (no desde el inicio)
           const dTime = p.time - drag.lastTime;
           const dPrice = p.price - drag.lastPrice;
-          replaceDrawing(drag.drawingId, moveBody(target, dTime, dPrice));
-          // Actualizamos lastTime/lastPrice para el próximo frame
+          liveDrag(drag.drawingId, moveBody(target, dTime, dPrice));
           setDrag({ mode: "body", drawingId: drag.drawingId, lastTime: p.time, lastPrice: p.price });
         }
         return;
       }
 
-      // Hover detection (solo si no está bloqueado y no hay tool activa)
       if (drawingsLocked || activeTool !== "none") {
         setHoveredDrawingId(null);
         return;
@@ -212,7 +189,11 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     };
 
     const onUp = () => {
-      if (drag.mode !== "none") setDrag({ mode: "none" });
+      if (drag.mode !== "none") {
+        // Commit del drag: una sola entrada de historia para todo el movimiento
+        commitDrag();
+        setDrag({ mode: "none" });
+      }
     };
 
     window.addEventListener("mousemove", onMove);
@@ -221,27 +202,16 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [
-    drawings, drag, keys, candles, chartSize, drawingsLocked, activeTool,
-    chart, series, replaceDrawing,
-  ]);
-
-  // ----------- CLICKS / MOUSEDOWN sobre el SVG -----------
+  }, [drawings, drag, keys, candles, chartSize, drawingsLocked, activeTool, liveDrag, commitDrag]);
 
   const onMouseDownSvg = (e: React.MouseEvent) => {
     const local = getLocalXY(e.clientX, e.clientY);
     if (!local) return;
-
-    // Tool activa: el click colocará un punto (manejado en onClick)
     if (activeTool !== "none") return;
-
     if (drawingsLocked) return;
 
     const hit = hitTest(local.x, local.y, drawings, toXY, chartSize.w);
-    if (!hit) {
-      setSelectedId(null);
-      return;
-    }
+    if (!hit) { setSelectedId(null); return; }
     setSelectedId(hit.drawing.id);
 
     if (hit.type === "handle") {
@@ -251,12 +221,7 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     } else if (hit.type === "body") {
       const p = fromXY(local.x, local.y);
       if (!p) return;
-      setDrag({
-        mode: "body",
-        drawingId: hit.drawing.id,
-        lastTime: p.time,
-        lastPrice: p.price,
-      });
+      setDrag({ mode: "body", drawingId: hit.drawing.id, lastTime: p.time, lastPrice: p.price });
       e.preventDefault();
       e.stopPropagation();
     }
@@ -274,7 +239,6 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       if (s) p = s.point;
     }
 
-    // 1 click
     if (activeTool === "hline") {
       addDrawing({ id: uid(), kind: "hline", price: p.price, color: "#facc15" });
       setActiveTool("none");
@@ -289,16 +253,16 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       addDrawing({
         id: uid(), kind: "order", side, entry, stop, target,
         time: p.time, color: side === "long" ? "#22c55e" : "#ef4444",
+        entryColor: "#ffffff",
+        stopColor: "#ef4444",
+        targetColor: "#22c55e",
+        size: 1,
       });
       setActiveTool("none");
       return;
     }
 
-    // 2 clicks
-    if (!pending) {
-      setPending({ p1: p });
-      return;
-    }
+    if (!pending) { setPending({ p1: p }); return; }
     const p1 = pending.p1;
     const p2 = applyModifiers(p, p1);
     setPending(null);
@@ -313,14 +277,11 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     setActiveTool("none");
   };
 
-  // ----------- POINTER EVENTS DINÁMICOS -----------
-  // El SVG captura clicks SOLO cuando hay algo que hacer.
   const svgNeedsClicks =
     activeTool !== "none" ||
     drag.mode !== "none" ||
     hoveredDrawingId !== null;
 
-  // Preview point
   const cursorPoint = cursor ? fromXY(cursor.x, cursor.y) : null;
   const previewPoint = cursorPoint
     ? applyModifiers(cursorPoint, pending?.p1 ?? null)
@@ -328,11 +289,9 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
   const previewXY = previewPoint ? toXY(previewPoint.time, previewPoint.price) : null;
 
   const snapHint = (keys.ctrl && cursorPoint && activeTool !== "none")
-    ? snapToHighLow(cursorPoint, candles)
-    : null;
+    ? snapToHighLow(cursorPoint, candles) : null;
   const snapXY = snapHint ? toXY(snapHint.point.time, snapHint.point.price) : null;
 
-  // Toolbar position
   const selected = drawings.find(d => d.id === selectedId);
   let toolbarPos: { x: number; y: number } | null = null;
   if (selected) {
@@ -349,56 +308,40 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
   }
 
   const cursorStyle =
-    drag.mode === "body" ? "grabbing" :
-    drag.mode === "handle" ? "grabbing" :
+    drag.mode === "body" || drag.mode === "handle" ? "grabbing" :
     activeTool !== "none" ? "crosshair" :
-    hoveredDrawingId ? "pointer" :
-    "default";
+    hoveredDrawingId ? "pointer" : "default";
 
   return (
     <div
       ref={wrapperRef}
       className="absolute inset-0"
-      style={{
-        pointerEvents: "none",  // EL WRAPPER NO CAPTURA NADA
-        zIndex: 3,
-      }}
+      style={{ pointerEvents: "none", zIndex: 3 }}
     >
       <svg
         ref={svgRef}
         className="absolute inset-0 h-full w-full"
         style={{
           pointerEvents: svgNeedsClicks ? "auto" : "none",
-          cursor: cursorStyle,
-          userSelect: "none",
+          cursor: cursorStyle, userSelect: "none",
         }}
         onMouseDown={onMouseDownSvg}
         onClick={onClickSvg}
       >
-        {/* Preview de dibujo en progreso */}
         {pending && (() => {
           const a = toXY(pending.p1.time, pending.p1.price);
           if (!a || !previewXY) return null;
           const isHoriz = keys.shift;
           return (
             <g>
-              <line
-                x1={a.x} y1={a.y}
-                x2={previewXY.x} y2={previewXY.y}
+              <line x1={a.x} y1={a.y} x2={previewXY.x} y2={previewXY.y}
                 stroke="#9ca3af" strokeWidth={1.5}
-                strokeDasharray={isHoriz ? "0" : "4,4"}
-              />
+                strokeDasharray={isHoriz ? "0" : "4,4"} />
               <circle cx={a.x} cy={a.y} r={4} fill="#9ca3af" />
-              {isHoriz && (
-                <text x={previewXY.x + 8} y={previewXY.y - 4} fontSize="10" fill="#facc15">
-                  Horizontal (Shift)
-                </text>
-              )}
             </g>
           );
         })()}
 
-        {/* Indicador snap */}
         {snapXY && (
           <g>
             <circle cx={snapXY.x} cy={snapXY.y} r={5}
@@ -421,7 +364,6 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
         ))}
       </svg>
 
-      {/* Toolbar flotante: vive fuera del SVG para poder tener pointer-events propios */}
       {selected && toolbarPos && (
         <div style={{ pointerEvents: "auto" }}>
           <FloatingToolbar x={toolbarPos.x} y={toolbarPos.y} chartWidth={chartSize.w} />
@@ -431,28 +373,17 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
   );
 }
 
-// ---------------- SHAPES ----------------
-
 function DrawingShape({
   d, toXY, chartWidth, isSelected, isHovered,
 }: {
-  d: Drawing;
-  toXY: ToXY;
-  chartWidth: number;
-  isSelected: boolean;
-  isHovered: boolean;
+  d: Drawing; toXY: ToXY; chartWidth: number;
+  isSelected: boolean; isHovered: boolean;
 }) {
   const w = d.width ?? 1.5;
   const dash = dashArray(d.lineStyle);
   const handleR = 4.5;
   const baseW = isHovered ? w + 0.5 : w;
-
-  const handleProps = {
-    r: handleR,
-    fill: d.color,
-    stroke: "#fff",
-    strokeWidth: 1.5,
-  };
+  const handleProps = { r: handleR, fill: d.color, stroke: "#fff", strokeWidth: 1.5 };
 
   if (d.kind === "hline") {
     const xy = toXY(0, d.price);
@@ -460,16 +391,12 @@ function DrawingShape({
     return (
       <g>
         <line x1={0} y1={xy.y} x2="100%" y2={xy.y}
-          stroke={d.color} strokeWidth={baseW} strokeDasharray={dash || "6,3"}
-          opacity={isHovered || isSelected ? 1 : 0.85} />
-        <rect x={6} y={xy.y - 9} width={62} height={16} rx={2}
-          fill={d.color} opacity={0.9} />
+          stroke={d.color} strokeWidth={baseW} strokeDasharray={dash || "6,3"} />
+        <rect x={6} y={xy.y - 9} width={62} height={16} rx={2} fill={d.color} opacity={0.9} />
         <text x={10} y={xy.y + 4} fontSize="10" fill="#000" fontFamily="monospace">
           {d.price.toFixed(5)}
         </text>
-        {isSelected && (
-          <circle cx={chartWidth / 2} cy={xy.y} {...handleProps} />
-        )}
+        {isSelected && <circle cx={chartWidth / 2} cy={xy.y} {...handleProps} />}
       </g>
     );
   }
@@ -499,20 +426,16 @@ function DrawingShape({
     const dPrice = d.p2.price - d.p1.price;
     const dPct = (dPrice / d.p1.price) * 100;
     const dBars = Math.abs(d.p2.time - d.p1.time);
-    const dT =
-      dBars > 86400 ? `${Math.round(dBars / 86400)}d` :
-      dBars > 3600  ? `${Math.round(dBars / 3600)}h`  :
-                      `${Math.round(dBars / 60)}m`;
+    const dT = dBars > 86400 ? `${Math.round(dBars / 86400)}d`
+             : dBars > 3600  ? `${Math.round(dBars / 3600)}h`
+             : `${Math.round(dBars / 60)}m`;
     return (
       <g>
-        <rect
-          x={Math.min(a.x, b.x)} y={Math.min(a.y, b.y)}
+        <rect x={Math.min(a.x, b.x)} y={Math.min(a.y, b.y)}
           width={Math.abs(b.x - a.x)} height={Math.abs(b.y - a.y)}
           fill={dPrice >= 0 ? "rgba(34,197,94,0.10)" : "rgba(239,68,68,0.10)"}
-          stroke={d.color} strokeWidth={baseW} strokeDasharray={dash || "3,3"}
-        />
-        <rect x={b.x + 4} y={b.y - 30} width={120} height={42} rx={3}
-          fill="#0d1117" stroke={d.color} />
+          stroke={d.color} strokeWidth={baseW} strokeDasharray={dash || "3,3"} />
+        <rect x={b.x + 4} y={b.y - 30} width={120} height={42} rx={3} fill="#0d1117" stroke={d.color} />
         <text x={b.x + 10} y={b.y - 18} fontSize="10" fill="#c9d1d9" fontFamily="monospace">
           Δ {dPrice.toFixed(5)} ({dPct.toFixed(2)}%)
         </text>
@@ -544,7 +467,8 @@ function DrawingShape({
           return (
             <g key={level}>
               <line x1={x1} y1={y} x2="100%" y2={y}
-                stroke={d.color} strokeWidth={baseW * 0.6} strokeDasharray={dash || "2,2"} opacity={0.75} />
+                stroke={d.color} strokeWidth={baseW * 0.6}
+                strokeDasharray={dash || "2,2"} opacity={0.75} />
               <text x={x1 + 4} y={y - 2} fontSize="9" fill={d.color} fontFamily="monospace">
                 {(level * 100).toFixed(1)}%  {priceAtLevel.toFixed(5)}
               </text>
@@ -569,35 +493,47 @@ function DrawingShape({
     const yStop = toXY(d.time, d.stop)?.y;
     const yTarget = toXY(d.time, d.target)?.y;
     if (!anchor || yEntry == null || yStop == null || yTarget == null) return null;
+
+    // Si tiene endTime, las líneas terminan ahí. Si no, van al final.
+    const endX = d.endTime
+      ? (toXY(d.endTime, d.entry)?.x ?? chartWidth)
+      : chartWidth;
+
+    const entryColor  = d.entryColor  ?? d.color;
+    const stopColor   = d.stopColor   ?? "#ef4444";
+    const targetColor = d.targetColor ?? "#22c55e";
+
     const rr = Math.abs(d.target - d.entry) / Math.abs(d.entry - d.stop || 1e-10);
+
     return (
       <g>
         <rect x={anchor.x} y={Math.min(yEntry, yTarget)}
-          width="100%" height={Math.abs(yTarget - yEntry)}
+          width={endX - anchor.x} height={Math.abs(yTarget - yEntry)}
           fill="rgba(34,197,94,0.12)" />
         <rect x={anchor.x} y={Math.min(yEntry, yStop)}
-          width="100%" height={Math.abs(yStop - yEntry)}
+          width={endX - anchor.x} height={Math.abs(yStop - yEntry)}
           fill="rgba(239,68,68,0.12)" />
-        <line x1={anchor.x} y1={yEntry} x2="100%" y2={yEntry}
-          stroke={d.color} strokeWidth={baseW} />
-        <line x1={anchor.x} y1={yTarget} x2="100%" y2={yTarget}
-          stroke="#22c55e" strokeWidth={baseW} strokeDasharray="4,3" />
-        <line x1={anchor.x} y1={yStop} x2="100%" y2={yStop}
-          stroke="#ef4444" strokeWidth={baseW} strokeDasharray="4,3" />
-        <rect x={anchor.x + 4} y={yEntry - 8} width={150} height={16} rx={2} fill={d.color} />
+        <line x1={anchor.x} y1={yEntry} x2={endX} y2={yEntry}
+          stroke={entryColor} strokeWidth={baseW} />
+        <line x1={anchor.x} y1={yTarget} x2={endX} y2={yTarget}
+          stroke={targetColor} strokeWidth={baseW} strokeDasharray="4,3" />
+        <line x1={anchor.x} y1={yStop} x2={endX} y2={yStop}
+          stroke={stopColor} strokeWidth={baseW} strokeDasharray="4,3" />
+        <rect x={anchor.x + 4} y={yEntry - 8} width={170} height={16} rx={2} fill={entryColor} />
         <text x={anchor.x + 8} y={yEntry + 4} fontSize="10" fill="#000" fontFamily="monospace">
           {d.side.toUpperCase()} @ {d.entry.toFixed(5)} RR {rr.toFixed(2)}
         </text>
         {isSelected && (
           <>
-            <circle cx={anchor.x} cy={yEntry} {...handleProps} />
-            <circle cx={anchor.x + 30} cy={yStop} {...handleProps} fill="#ef4444" />
-            <circle cx={anchor.x + 30} cy={yTarget} {...handleProps} fill="#22c55e" />
+            <circle cx={anchor.x} cy={yEntry} {...handleProps} fill={entryColor} />
+            <circle cx={anchor.x + 30} cy={yStop} {...handleProps} fill={stopColor} />
+            <circle cx={anchor.x + 30} cy={yTarget} {...handleProps} fill={targetColor} />
+            {/* Handle del endTime (extremo derecho) */}
+            <circle cx={endX} cy={yEntry} r={4} fill={entryColor} stroke="#fff" strokeWidth={1.5} />
           </>
         )}
       </g>
     );
   }
-
   return null;
 }

@@ -6,8 +6,8 @@ export type LineStyle = "solid" | "dashed" | "dotted";
 export type DrawingBase = {
   id: string;
   color: string;
-  width?: number;          // grosor en px (default 1.5)
-  lineStyle?: LineStyle;   // estilo de línea (default solid)
+  width?: number;
+  lineStyle?: LineStyle;
 };
 
 export type TrendLine = DrawingBase & {
@@ -40,34 +40,29 @@ export type OrderBox = DrawingBase & {
   entry: number;
   stop: number;
   target: number;
-  time: number;
+  time: number;          // anclaje horizontal (inicio)
+  endTime?: number;      // si está definido, las líneas terminan acá; si no, van al borde
+  entryColor?: string;   // override del color de la línea de entry
+  stopColor?: string;
+  targetColor?: string;
+  size?: number;         // tamaño en lotes (informativo, default 1)
 };
 
 export type Drawing = TrendLine | HorizontalLine | Measure | Fibonacci | OrderBox;
 
 export type DrawingTool =
-  | "none"
-  | "trendline"
-  | "hline"
-  | "measure"
-  | "fib"
-  | "order-long"
-  | "order-short";
+  | "none" | "trendline" | "hline" | "measure" | "fib"
+  | "order-long" | "order-short";
 
 export const DEFAULT_FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618];
 
 export const COLOR_PALETTE = [
-  "#60a5fa", // azul
-  "#22c55e", // verde
-  "#ef4444", // rojo
-  "#facc15", // amarillo
-  "#a78bfa", // violeta
-  "#f97316", // naranja
-  "#ec4899", // rosa
-  "#ffffff", // blanco
+  "#60a5fa", "#22c55e", "#ef4444", "#facc15",
+  "#a78bfa", "#f97316", "#ec4899", "#ffffff",
 ];
 
-// Estilo SVG según LineStyle
+export const WIDTHS = [0.5, 1, 1.5, 2, 3, 4];
+
 export function dashArray(style?: LineStyle): string {
   if (style === "dashed") return "6,4";
   if (style === "dotted") return "2,3";

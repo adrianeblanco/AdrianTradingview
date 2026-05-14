@@ -1,15 +1,7 @@
 // src/lib/sessions.ts
-// Marcado de sesiones de Forex sobre el chart.
-// Horarios estándar (los más usados por ICT/SMC). Todos en UTC.
-// El usuario puede ajustarlos en el panel.
-//
-// Estándar (no en daylight saving):
-//   London Open:      08:00–11:00 UTC   (3:00–6:00 NY EST)
-//   NY Killzone:      12:00–15:00 UTC   (7:00–10:00 NY EST)  <-- LA QUE INTERESA
-//   NY AM Session:    13:30–16:00 UTC   (8:30–11:00 NY)
-//   London Close:     15:00–17:00 UTC   (10:00–12:00 NY)
-//
-// Estos son los "Killzones" de ICT más populares.
+// Sesiones de Forex. Toda la lógica en UTC.
+// Ahora con `opacity` separada para que el usuario pueda controlar intensidad
+// sin tocar el color base.
 
 export type Session = {
   id: string;
@@ -18,10 +10,11 @@ export type Session = {
   startMinUTC: number;
   endHourUTC: number;
   endMinUTC: number;
-  color: string;       // rgba con alpha
-  borderColor: string; // borde
+  color: string;       // color base (hex)
+  opacity: number;     // 0-1, intensidad del relleno
+  borderOpacity: number; // 0-1, intensidad del borde
   enabled: boolean;
-  emphasis?: boolean;  // si true, se pinta más fuerte (caso NY Killzone)
+  emphasis?: boolean;
 };
 
 export const DEFAULT_SESSIONS: Session[] = [
@@ -30,8 +23,9 @@ export const DEFAULT_SESSIONS: Session[] = [
     label: "London Killzone",
     startHourUTC: 8, startMinUTC: 0,
     endHourUTC: 11, endMinUTC: 0,
-    color: "rgba(56, 139, 253, 0.08)",
-    borderColor: "rgba(56, 139, 253, 0.35)",
+    color: "#388bfd",
+    opacity: 0.08,
+    borderOpacity: 0.35,
     enabled: true,
   },
   {
@@ -39,8 +33,9 @@ export const DEFAULT_SESSIONS: Session[] = [
     label: "NY Killzone",
     startHourUTC: 12, startMinUTC: 0,
     endHourUTC: 15, endMinUTC: 0,
-    color: "rgba(255, 184, 0, 0.18)",       // amarillo más fuerte
-    borderColor: "rgba(255, 184, 0, 0.65)",
+    color: "#ffb800",
+    opacity: 0.18,
+    borderOpacity: 0.65,
     enabled: true,
     emphasis: true,
   },
@@ -49,18 +44,25 @@ export const DEFAULT_SESSIONS: Session[] = [
     label: "London Close",
     startHourUTC: 15, startMinUTC: 0,
     endHourUTC: 17, endMinUTC: 0,
-    color: "rgba(248, 81, 73, 0.06)",
-    borderColor: "rgba(248, 81, 73, 0.25)",
+    color: "#f85149",
+    opacity: 0.06,
+    borderOpacity: 0.25,
     enabled: false,
   },
 ];
 
-// Para una vela dada (time en unix seconds, UTC), nos dice en qué sesión cae (o null)
+// Helper: hex + opacity → rgba string
+export function hexWithAlpha(hex: string, alpha: number): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 export function sessionForTime(t: number, sessions: Session[]): Session | null {
   const d = new Date(t * 1000);
-  const h = d.getUTCHours();
-  const m = d.getUTCMinutes();
-  const minutes = h * 60 + m;
+  const minutes = d.getUTCHours() * 60 + d.getUTCMinutes();
   for (const s of sessions) {
     if (!s.enabled) continue;
     const start = s.startHourUTC * 60 + s.startMinUTC;
@@ -70,17 +72,10 @@ export function sessionForTime(t: number, sessions: Session[]): Session | null {
   return null;
 }
 
-// Calcula los rangos de tiempo (start, end en unix seconds) donde cada sesión
-// activa estuvo abierta dentro del rango visible del chart.
-// Esto lo usa el overlay para dibujar las bandas.
 export function sessionRangesInWindow(
-  fromTime: number,
-  toTime: number,
-  sessions: Session[],
+  fromTime: number, toTime: number, sessions: Session[],
 ): Array<{ session: Session; from: number; to: number }> {
   const out: Array<{ session: Session; from: number; to: number }> = [];
-
-  // Recorremos día por día UTC
   const dayMs = 86400 * 1000;
   const startDay = new Date(fromTime * 1000);
   startDay.setUTCHours(0, 0, 0, 0);
@@ -89,7 +84,7 @@ export function sessionRangesInWindow(
 
   for (let day = startDay.getTime(); day <= endDay.getTime(); day += dayMs) {
     const d = new Date(day);
-    const dow = d.getUTCDay(); // 0=domingo, 6=sábado: forex cerrado
+    const dow = d.getUTCDay();
     if (dow === 0 || dow === 6) continue;
 
     for (const s of sessions) {
@@ -102,11 +97,9 @@ export function sessionRangesInWindow(
         Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
                  s.endHourUTC, s.endMinUTC) / 1000,
       );
-      // Sólo si cae dentro de la ventana visible
       if (to < fromTime || from > toTime) continue;
       out.push({ session: s, from, to });
     }
   }
-
   return out;
 }

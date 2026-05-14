@@ -1,6 +1,7 @@
 // src/components/sessions/SessionsPanel.tsx
 "use client";
 import { useChartStore } from "@/lib/store/chart-store";
+import { hexWithAlpha } from "@/lib/sessions";
 
 export function SessionsPanel() {
   const sessions       = useChartStore(s => s.sessions);
@@ -21,7 +22,7 @@ export function SessionsPanel() {
         >
           <span
             className="h-2 w-2 rounded-sm"
-            style={{ background: s.enabled ? s.borderColor : "#3f3f46" }}
+            style={{ background: s.enabled ? hexWithAlpha(s.color, s.borderOpacity) : "#3f3f46" }}
           />
           {s.label}
         </button>

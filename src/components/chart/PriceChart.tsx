@@ -3,19 +3,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  createChart,
-  CandlestickSeries,
-  HistogramSeries,
-  LineSeries,
-  type IChartApi,
-  type ISeriesApi,
-  type Time,
+  createChart, CandlestickSeries, HistogramSeries, LineSeries,
+  type IChartApi, type ISeriesApi, type Time,
 } from "lightweight-charts";
 import { useChartStore } from "@/lib/store/chart-store";
-import { useSettingsStore } from "@/lib/store/settings-store";
+import { useSettingsStore, getTimezone } from "@/lib/store/settings-store";
 import { TwelveDataProvider } from "@/lib/data/twelvedata";
 import { loadDukascopyRange } from "@/lib/data/dukascopy-csv";
 import { ema, closesOf } from "@/lib/indicators";
+import { priceDecimals as autoDecimals } from "@/lib/pips";
 import type { Candle } from "@/lib/data/types";
 import { SessionsOverlay } from "../sessions/SessionsOverlay";
 import { DrawingsOverlay } from "../drawing/DrawingsOverlay";
@@ -41,10 +37,10 @@ export function PriceChart() {
   const yEnd         = useChartStore(s => s.backtestYearEnd);
   const chartLocked  = useChartStore(s => s.chartLocked);
 
-  // Settings (re-render cuando cambian)
   const settings = useSettingsStore();
+  const tz = getTimezone(settings.timezoneId);
 
-  // ---- Crear chart una sola vez ----
+  // ---- Create chart ----
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
@@ -59,8 +55,7 @@ export function PriceChart() {
         horzLines: { color: settings.gridHorzColor, visible: settings.gridVisible },
       },
       timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
+        timeVisible: true, secondsVisible: false,
         borderColor: settings.timeAxisBorderColor,
       },
       rightPriceScale: {
@@ -73,7 +68,15 @@ export function PriceChart() {
         horzLine: { color: settings.crosshairColor, style: 3, width: 1 },
       },
       autoSize: true,
-      // Watermark hace falta llamada extra en lightweight-charts v5 con createTextWatermark
+      localization: {
+        // Aplicar offset de timezone a la formación de tiempos del eje
+        timeFormatter: (t: number) => {
+          const d = new Date((t + tz.offsetMinutes * 60) * 1000);
+          // YYYY-MM-DD HH:MM
+          const pad = (n: number) => String(n).padStart(2, "0");
+          return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+        },
+      },
     });
     chartRef.current = chart;
 
@@ -92,15 +95,11 @@ export function PriceChart() {
       priceFormat: { type: "volume" },
       priceScaleId: "",
     });
-    volSeries.priceScale().applyOptions({
-      scaleMargins: { top: 0.85, bottom: 0 },
-    });
+    volSeries.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
     volSeriesRef.current = volSeries;
 
     chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
-      if (range) {
-        setVisibleRange({ from: Number(range.from), to: Number(range.to) });
-      }
+      if (range) setVisibleRange({ from: Number(range.from), to: Number(range.to) });
     });
 
     setReady(true);
@@ -112,7 +111,7 @@ export function PriceChart() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- Aplicar settings reactivamente al chart ----
+  // ---- Apply settings reactively ----
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -133,7 +132,17 @@ export function PriceChart() {
         vertLine: { color: settings.crosshairColor },
         horzLine: { color: settings.crosshairColor },
       },
+      localization: {
+        timeFormatter: (t: number) => {
+          const d = new Date((t + tz.offsetMinutes * 60) * 1000);
+          const pad = (n: number) => String(n).padStart(2, "0");
+          return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+        },
+      },
     });
+
+    // Decimales: auto o manual
+    const decimals = settings.priceDecimals >= 0 ? settings.priceDecimals : autoDecimals(symbol);
     candleSeriesRef.current?.applyOptions({
       upColor: settings.upColor,
       borderUpColor: settings.upBorderColor,
@@ -141,17 +150,15 @@ export function PriceChart() {
       downColor: settings.downColor,
       borderDownColor: settings.downBorderColor,
       wickDownColor: settings.downWickColor,
-      ...(settings.priceDecimals >= 0 ? {
-        priceFormat: {
-          type: "price" as const,
-          precision: settings.priceDecimals,
-          minMove: 1 / Math.pow(10, settings.priceDecimals),
-        },
-      } : {}),
+      priceFormat: {
+        type: "price" as const,
+        precision: decimals,
+        minMove: 1 / Math.pow(10, decimals),
+      },
     });
-  }, [settings]);
+  }, [settings, tz.offsetMinutes, symbol]);
 
-  // ---- Aplicar candado al chart ----
+  // ---- Chart lock ----
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -161,7 +168,7 @@ export function PriceChart() {
     });
   }, [chartLocked]);
 
-  // ---- Cargar datos ----
+  // ---- Load data ----
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -177,7 +184,7 @@ export function PriceChart() {
         if (cancelled) return;
         setCandles(data);
       } catch (err) {
-        console.error("[chart] error cargando datos:", err);
+        console.error("[chart] error:", err);
         if (!cancelled) setCandles([]);
       } finally {
         if (!cancelled) setLoading(false);
@@ -186,7 +193,7 @@ export function PriceChart() {
     return () => { cancelled = true; };
   }, [symbol, timeframe, backtestMode, yStart, yEnd]);
 
-  // ---- Pintar velas ----
+  // ---- Paint candles ----
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series || candles.length === 0) return;
@@ -210,7 +217,7 @@ export function PriceChart() {
     chartRef.current?.timeScale().fitContent();
   }, [candles]);
 
-  // ---- Indicadores EMA ----
+  // ---- EMAs ----
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || candles.length === 0) return;
@@ -222,9 +229,7 @@ export function PriceChart() {
     const addEMA = (period: number, color: string, key: string) => {
       const data = ema(closes, period);
       const s = chart.addSeries(LineSeries, {
-        color, lineWidth: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
+        color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
       });
       s.setData(
         candles
@@ -251,10 +256,8 @@ export function PriceChart() {
         </div>
       )}
 
-      {/* Watermark del símbolo */}
       {settings.watermarkVisible && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center"
-             style={{ zIndex: 1 }}>
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center" style={{ zIndex: 1 }}>
           <div className="select-none text-center">
             <div className="text-7xl font-bold text-white/[0.03]">{symbol}</div>
             <div className="mt-2 text-base text-white/[0.04]">{symbolName}</div>
@@ -262,7 +265,6 @@ export function PriceChart() {
         </div>
       )}
 
-      {/* Indicador de candado activo */}
       {chartLocked && (
         <div className="pointer-events-none absolute right-16 top-3 z-20 rounded bg-orange-600/90 px-2 py-1 text-[10px] font-semibold text-white shadow">
           🔒 Chart bloqueado
@@ -273,15 +275,8 @@ export function PriceChart() {
 
       {ready && chartRef.current && candleSeriesRef.current && visibleRange && (
         <>
-          <SessionsOverlay
-            chart={chartRef.current}
-            visibleRange={visibleRange}
-          />
-          <DrawingsOverlay
-            chart={chartRef.current}
-            series={candleSeriesRef.current}
-            candles={candles}
-          />
+          <SessionsOverlay chart={chartRef.current} visibleRange={visibleRange} />
+          <DrawingsOverlay chart={chartRef.current} series={candleSeriesRef.current} candles={candles} />
         </>
       )}
     </div>
