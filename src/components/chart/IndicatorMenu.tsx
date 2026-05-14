@@ -1,88 +1,55 @@
+// src/components/chart/IndicatorMenu.tsx
 "use client";
+import { useState } from "react";
+import { Activity, ChevronDown } from "lucide-react";
+import { useChartStore } from "@/lib/store/chart-store";
 
-import { Activity, Check } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { useChartStore, type IndicatorKey } from "@/lib/store/chart-store";
-
-interface Entry {
-  key: IndicatorKey;
-  label: (cfg: {
-    ema20: number;
-    ema50: number;
-    ema200: number;
-    rsi: number;
-    macdFast: number;
-    macdSlow: number;
-    macdSignal: number;
-  }) => string;
-  group: string;
-}
-
-const ENTRIES: Entry[] = [
-  { key: "ema20", group: "Medias móviles", label: (c) => `EMA ${c.ema20}` },
-  { key: "ema50", group: "Medias móviles", label: (c) => `EMA ${c.ema50}` },
-  { key: "ema200", group: "Medias móviles", label: (c) => `EMA ${c.ema200}` },
-  { key: "volume", group: "Volumen", label: () => "Volumen" },
-  { key: "rsi", group: "Osciladores", label: (c) => `RSI (${c.rsi})` },
-  {
-    key: "macd",
-    group: "Osciladores",
-    label: (c) => `MACD (${c.macdFast}, ${c.macdSlow}, ${c.macdSignal})`,
-  },
+const ITEMS: { key: any; label: string }[] = [
+  { key: "ema20",  label: "EMA 20"  },
+  { key: "ema50",  label: "EMA 50"  },
+  { key: "ema200", label: "EMA 200" },
+  { key: "rsi",    label: "RSI 14"  },
+  { key: "macd",   label: "MACD"    },
+  { key: "volume", label: "Volumen" },
 ];
 
 export function IndicatorMenu() {
-  const indicators = useChartStore((s) => s.indicators);
-  const config = useChartStore((s) => s.config);
-  const toggle = useChartStore((s) => s.toggleIndicator);
-
-  const groups = ENTRIES.reduce<Record<string, Entry[]>>((acc, i) => {
-    (acc[i.group] ||= []).push(i);
-    return acc;
-  }, {});
-
-  const activeCount = Object.values(indicators).filter(Boolean).length;
+  const indicators     = useChartStore(s => s.indicators);
+  const toggle         = useChartStore(s => s.toggleIndicator);
+  const [open, setOpen] = useState(false);
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger className="flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs text-tv-text hover:bg-tv-panel-hover">
-        <Activity className="h-3.5 w-3.5" />
-        <span>Indicadores</span>
-        {activeCount > 0 && (
-          <span className="ml-1 rounded bg-tv-blue/20 px-1.5 py-0.5 text-[10px] font-semibold text-tv-blue">
-            {activeCount}
-          </span>
-        )}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64 bg-tv-panel">
-        {Object.entries(groups).map(([group, items], idx) => (
-          <DropdownMenuGroup key={group}>
-            {idx > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-tv-text-muted">
-              {group}
-            </DropdownMenuLabel>
-            {items.map((i) => (
-              <DropdownMenuItem
-                key={i.key}
-                closeOnClick={false}
-                onClick={() => toggle(i.key)}
-                className="flex items-center justify-between text-xs"
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 rounded bg-zinc-900 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+      >
+        <Activity size={14} />
+        Indicadores
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded border border-zinc-800 bg-zinc-950 py-1 shadow-xl">
+            {ITEMS.map(it => (
+              <button
+                key={it.key}
+                onClick={() => toggle(it.key)}
+                className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-zinc-900"
               >
-                <span>{i.label(config)}</span>
-                {indicators[i.key] && <Check className="h-3.5 w-3.5 text-tv-blue" />}
-              </DropdownMenuItem>
+                <span className="text-zinc-300">{it.label}</span>
+                <input
+                  type="checkbox"
+                  checked={(indicators as any)[it.key]}
+                  readOnly
+                  className="pointer-events-none"
+                />
+              </button>
             ))}
-          </DropdownMenuGroup>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+          </div>
+        </>
+      )}
+    </div>
   );
 }

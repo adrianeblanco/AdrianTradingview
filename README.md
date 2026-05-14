@@ -1,127 +1,136 @@
-# TradingView Gratis 📈
+# AdrianTV 📈
 
-> **Una alternativa open-source y 100% gratis a TradingView Pro, pensada para LATAM.**
-> Velas en vivo, indicadores propios, watchlist, multi-timeframe — sin pagar USD, sin login, sin ads.
+Fork de TradingView Gratis, **adaptado para forex, metales y futuros**. Sin crypto.
 
-Plataforma de charts crypto construida sobre los datos públicos de **Binance** (WebSocket) y la misma librería de render que usa TradingView ([`lightweight-charts`](https://github.com/tradingview/lightweight-charts)).
+## ✨ Qué cambia respecto al original
+
+- 🌍 **Datos de TwelveData** (forex, metales, futuros, índices). Crypto fuera.
+- ⏱️ **31 timeframes** (3m, 5m, 10m, 15m, 30m, 45m, 90m, 144m / 1h..18h / 1D..3D / 1W..3W / 1M..12M).
+- 🎯 **NY Killzone + London Killzone** marcadas en el chart con bandas verticales.
+- ✏️ **Drawing tools**: línea de tendencia, línea horizontal, herramienta de medida, Fibonacci, órdenes Long/Short con SL y TP.
+- 📚 **Backtest con histórico real** de Dukascopy (CSVs descargados manualmente, ver abajo).
+- 💾 Todo persiste en localStorage (símbolo, timeframe, indicadores, dibujos, sesiones).
 
 ---
 
-## ✨ Features
-
-- 📊 **Velas en vivo** vía WebSocket de Binance (sin API key)
-- 🔍 **Búsqueda de símbolo** sobre todos los pares USDT del exchange
-- ⏱️ **Multi-timeframe**: 1m / 5m / 15m / 1h / 4h / 1d / 1w
-- 📐 **Indicadores client-side**: EMA 20/50/200, RSI 14, MACD 12/26/9, Volumen
-- 👁️ **Watchlist** con precios y cambio 24h actualizándose en tiempo real
-- 🎨 **Visual idéntica a TradingView** (paleta, fuentes, layout)
-- 💾 **Persistencia** en localStorage (símbolo, timeframe, indicadores)
-- 🔌 **Reconexión robusta** del WebSocket con backoff exponencial
-- 🌐 100% client-side — deploy estático en Vercel/Cloudflare
-
-## 🚀 Empezar
+## 🚀 Instalación rápida
 
 ```bash
 npm install
+cp .env.example .env.local
+# Editá .env.local y pegá tu API key de TwelveData
 npm run dev
 ```
 
-Abrí [http://localhost:3000](http://localhost:3000).
+Abrí http://localhost:3000
 
-## 🛠️ Stack
+### Conseguir API key gratis de TwelveData
 
-| Capa | Tech |
-|---|---|
-| Framework | Next.js 16 (App Router) |
-| Lenguaje | TypeScript |
-| Estilos | Tailwind CSS 4 + shadcn/ui |
-| Charts | [lightweight-charts](https://github.com/tradingview/lightweight-charts) v5 |
-| Estado | Zustand (con persistencia) |
-| Iconos | lucide-react |
-| Datos | Binance Public REST + WebSocket |
+1. Andá a https://twelvedata.com/
+2. Sign up con email
+3. En el dashboard, copiá la API key
+4. Pegala en `.env.local` como `TWELVEDATA_API_KEY=...`
 
-## 📐 Arquitectura
+Plan gratis: **800 requests/día, 8 req/minuto**. Para uso personal alcanza sobradamente.
+
+---
+
+## 📚 Backtesting con histórico de Dukascopy
+
+Dukascopy no tiene API pública gratis, pero podés descargar CSVs históricos a mano y subirlos al repo.
+
+### Pasos:
+
+1. Andá a https://www.dukascopy.com/swiss/english/marketwatch/historical/
+2. Elegí el instrumento (ej. EUR/USD), el rango de fechas, y "Time period: 1 Minute"
+3. Format = **CSV**, time zone = **GMT**, click en "Get the historical data"
+4. Esperá que cargue y descargá el CSV
+5. Renombralo siguiendo este patrón: `EURUSD_M1_2024.csv`
+   - Símbolo sin slash: `EURUSD`, `XAUUSD`, `GBPUSD`
+   - Timeframe: `M1`, `M5`, `M15`, `M30`, `H1`, `H4`, `D1`, `W1`, `MN`
+   - Año: `2020`, `2021`, etc.
+6. Copialo a `public/historical/`
+7. En la app, activá el botón **"Backtest"** del header y elegí el rango de años
+
+Si no tenés el CSV exacto, el sistema intenta agregar desde un timeframe menor automáticamente.
+
+---
+
+## 🌐 Deploy en Vercel — paso a paso
+
+1. **Subí los cambios a GitHub** (instrucciones más abajo)
+2. Andá a [vercel.com/new](https://vercel.com/new)
+3. "Import Git Repository" → seleccioná `adrianeblanco/AdrianTradingview`
+4. En **Environment Variables**, agregá:
+   - Name: `TWELVEDATA_API_KEY`
+   - Value: tu API key real
+5. Click **Deploy**. Listo, en ~2 minutos está online.
+
+---
+
+## 🎮 Cómo usar
+
+### Cambiar de timeframe
+Botones rápidos en el header (1m, 5m, 15m, 1h, 4h, 1D). Para los demás, click en **"Más"** → menú agrupado.
+
+### Activar la NY Killzone
+Ya viene activada por defecto. Se ve como una banda amarilla vertical sobre el chart, de 12:00–15:00 UTC (que son las 7:00–10:00 EST en horario estándar). Para ocultarla, click en el botón **"NY Killzone"** del header.
+
+### Dibujar
+Toolbar izquierda:
+- **Línea de tendencia** → 2 clicks sobre el chart
+- **Línea horizontal** → 1 click al precio que querés marcar
+- **Medida** → 2 clicks, te muestra Δ precio, % y Δ tiempo
+- **Fibonacci** → 2 clicks (low → high)
+- **Orden Long / Short** → 1 click al precio de entrada. Pone SL y TP automáticos con 1:2 RR. Click en la ✕ para borrar.
+
+### Modo Backtest
+Click en **"Backtest"** del header. Elegí rango de años. Si tenés los CSVs en `public/historical/`, los carga. Si no, queda vacío (no falla).
+
+---
+
+## 📂 Estructura
 
 ```
 src/
 ├── app/
-│   ├── layout.tsx          # Root, fuente Inter, TooltipProvider, dark
-│   ├── page.tsx            # Dashboard armando el layout
-│   └── globals.css         # Paleta TradingView
+│   ├── api/twelvedata/route.ts   # Proxy que esconde la API key
+│   ├── layout.tsx
+│   ├── page.tsx                  # Layout principal
+│   └── globals.css
 ├── components/
-│   ├── chart/
-│   │   ├── PriceChart.tsx     # Chart core (lightweight-charts + panes)
-│   │   ├── SymbolSelector.tsx # Búsqueda de pares USDT
-│   │   ├── TimeframeSelector.tsx
-│   │   └── IndicatorMenu.tsx  # Toggle EMA/RSI/MACD/Volume
-│   ├── layout/
-│   │   ├── Header.tsx
-│   │   ├── LeftSidebar.tsx    # Iconos drawing tools (visual)
-│   │   ├── RightSidebar.tsx
-│   │   └── BottomPanel.tsx    # Stats 24h
-│   ├── watchlist/
-│   │   └── Watchlist.tsx      # Precios live multi-símbolo
-│   └── ui/                    # shadcn primitives
+│   ├── chart/                    # PriceChart, SymbolSelector, TimeframeSelector, IndicatorMenu
+│   ├── sessions/                 # SessionsOverlay (las bandas), SessionsPanel (toggles)
+│   ├── drawing/                  # DrawingToolbar + DrawingsOverlay (SVG interactivo)
+│   └── backtest/                 # BacktestPanel
 └── lib/
-    ├── binance/
-    │   ├── rest.ts            # klines / ticker / exchangeInfo
-    │   ├── ws.ts              # WS multiplex + auto-reconnect
-    │   └── types.ts
-    ├── indicators/
-    │   └── index.ts           # SMA, EMA, RSI (Wilder), MACD
-    ├── store/
-    │   └── chart-store.ts     # Zustand global state
-    └── format.ts              # formatPrice / formatPct / formatVolume
+    ├── timeframes.ts             # Las 31 temporalidades
+    ├── sessions.ts               # Lógica de killzones
+    ├── data/
+    │   ├── types.ts
+    │   ├── twelvedata.ts         # Provider para live
+    │   ├── dukascopy-csv.ts      # Loader de CSVs históricos
+    │   ├── aggregate.ts          # Agregar velas para tf no nativos
+    │   └── default-symbols.ts    # EUR/USD, XAU/USD, ES=F, etc.
+    ├── indicators/index.ts       # EMA, RSI, MACD
+    ├── drawing/types.ts
+    └── store/chart-store.ts      # Zustand state
+public/
+└── historical/                   # Acá van los CSVs de Dukascopy
 ```
 
-## 🌐 Deploy a Vercel
+---
 
-```bash
-npm i -g vercel
-vercel
-```
+## ⚠️ Limitaciones honestas
 
-O conectá el repo en [vercel.com/new](https://vercel.com/new) y deploy automático. No hay variables de entorno — todo es cliente.
+- **TwelveData free tier**: 8 req/min, 800/día. Si cambiás de símbolo o timeframe muy rápido vas a chocar contra el rate limit. Tomate 5 segundos entre cambios.
+- **WebSocket live**: TwelveData free no incluye WebSocket. Las velas se cargan por polling cada vez que cambia el símbolo. Para "vivo en tiempo real", necesitás su plan pago. Para análisis técnico funciona bien igual.
+- **Drawings no arrastrables**: una vez dibujados, no se pueden mover. Para corregir, borralos con la ✕ y dibujá de nuevo.
+- **Sesiones en UTC fijo**: no ajustan automáticamente por horario de verano (DST). En invierno NY killzone = 12:00–15:00 UTC, en verano = 11:00–14:00 UTC. Si te molesta, abrí un issue.
 
-## 🧠 Cómo funciona
-
-### Datos históricos
-Al abrir un símbolo se hace un `GET /api/v3/klines` (REST) que trae las últimas **1000 velas** del par + timeframe activo. Se renderizan instantáneamente.
-
-### Datos en vivo
-Una única conexión WebSocket multiplexada (`stream.binance.com`) recibe:
-- `<symbol>@kline_<interval>` → updates de la vela actual + cierre de velas
-- `<symbol>@miniTicker` → tickers del watchlist
-
-Al reconectarse (Binance corta el WS cada 24h) se vuelven a suscribir todos los streams activos con backoff exponencial.
-
-### Indicadores
-Se calculan **client-side** sobre el array de velas en cada update. Implementaciones puras de TypeScript:
-- `EMA`: seeded con SMA del primer período, luego `close * k + prev * (1-k)`
-- `RSI`: Wilder (suavizado exponencial sobre ganancias/pérdidas, período 14)
-- `MACD`: EMA(12) − EMA(26), signal = EMA(9) sobre MACD line
-
-Para 1000 velas y panes múltiples el costo es despreciable.
-
-## ⚠️ Qué NO incluye (todavía)
-
-- ❌ Pine Script (propietario de TradingView, no se puede clonar)
-- ❌ Drawing tools persistentes (Fibo, trend lines arrastrables)
-- ❌ Replay bar-by-bar
-- ❌ Alertas server-side (siguiente video de la serie)
-- ❌ Trading real (bot con API privada — video 4)
-
-## 📺 Serie de videos
-
-Este repo es la base de la serie **"TradingView Gratis"**:
-
-1. ✅ **Video 1 — Base**: lo que ves acá
-2. 🔜 **Video 2 — Alertas**: Supabase + Telegram bot
-3. 🔜 **Video 3 — Indicadores AI**: SuperTrend, Ichimoku, custom con Claude
-4. 🔜 **Video 4 — Bot que opera**: API privada Binance + ejecución
+---
 
 ## 📄 Licencia
 
-MIT — usalo, forkealo, monetizalo, lo que quieras.
-
-`lightweight-charts` es Apache 2.0 con atribución a TradingView — la atribución vive en el footer/UI por requerimiento de la licencia.
+MIT.  
+`lightweight-charts` es Apache 2.0 — el footer mantiene la atribución a TradingView por requerimiento de licencia.

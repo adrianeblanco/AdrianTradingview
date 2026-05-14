@@ -1,31 +1,41 @@
-"use client";
-
-import { Header } from "@/components/layout/Header";
-import { LeftSidebar } from "@/components/layout/LeftSidebar";
-import { RightSidebar } from "@/components/layout/RightSidebar";
-import { BottomPanel } from "@/components/layout/BottomPanel";
+// src/app/page.tsx
+import { SymbolSelector } from "@/components/chart/SymbolSelector";
+import { TimeframeSelector } from "@/components/chart/TimeframeSelector";
+import { IndicatorMenu } from "@/components/chart/IndicatorMenu";
+import { SessionsPanel } from "@/components/sessions/SessionsPanel";
+import { BacktestPanel } from "@/components/backtest/BacktestPanel";
+import { DrawingToolbar } from "@/components/drawing/DrawingToolbar";
 import { PriceChart } from "@/components/chart/PriceChart";
-import { IndicatorSettingsDialog } from "@/components/chart/IndicatorSettingsDialog";
-import { useChartStore } from "@/lib/store/chart-store";
 
-export default function HomePage() {
-  const symbol = useChartStore((s) => s.symbol);
-  const timeframe = useChartStore((s) => s.timeframe);
-
+export default function Page() {
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-tv-bg">
-      <Header />
-      <div className="flex min-h-0 flex-1">
-        <LeftSidebar />
-        <main className="relative flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1">
-            <PriceChart symbol={symbol} timeframe={timeframe} />
-          </div>
+    <div className="flex h-screen w-screen flex-col bg-zinc-950 text-zinc-100">
+      {/* Header */}
+      <header className="flex h-12 items-center gap-3 border-b border-zinc-800 px-3">
+        <span className="font-bold text-blue-400">AdrianTV</span>
+        <SymbolSelector />
+        <div className="mx-2 h-6 w-px bg-zinc-800" />
+        <TimeframeSelector />
+        <div className="mx-2 h-6 w-px bg-zinc-800" />
+        <IndicatorMenu />
+        <BacktestPanel />
+        <div className="flex-1" />
+        <SessionsPanel />
+      </header>
+
+      {/* Body: toolbar + chart */}
+      <div className="flex flex-1 overflow-hidden">
+        <DrawingToolbar />
+        <main className="relative flex-1">
+          <PriceChart />
         </main>
-        <RightSidebar />
       </div>
-      <BottomPanel />
-      <IndicatorSettingsDialog />
+
+      {/* Footer */}
+      <footer className="flex h-6 items-center justify-between border-t border-zinc-800 px-3 text-[10px] text-zinc-500">
+        <span>Datos: TwelveData + Dukascopy CSV</span>
+        <span>Powered by lightweight-charts (TradingView, Apache 2.0)</span>
+      </footer>
     </div>
   );
 }
