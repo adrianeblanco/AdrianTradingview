@@ -1,9 +1,12 @@
 // src/components/drawing/DrawingsOverlay.tsx
 "use client";
-// v4 changes vs v3:
-//  - Durante drag usa liveDrag() (sin history). Al soltar, commitDrag() pushea
-//    una sola entrada de historia. Antes cada pixel hacía una entry → spam.
-//  - Pasa endTime a las órdenes para que se respete
+// v5 fixes:
+//  - safeFromXY: cuando el cursor pasa de la última vela, EXTRAPOLA el tiempo
+//    en lugar de devolver null. Esto permite mover dibujos hacia el futuro.
+//  - Crear órdenes con endTime preestablecido (50 barras hacia adelante)
+//  - Hit-test contempla "left" y "right" handles
+//  - Líneas de orden: entry sólida, SL/TP dashed por default
+//  - Estilo de cada línea respeta lineStyle del drawing si está seteado
 
 import { useEffect, useRef, useState } from "react";
 import type { IChartApi, ISeriesApi, Time } from "lightweight-charts";
@@ -45,6 +48,7 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
   const selectedId      = useChartStore(s => s.selectedDrawingId);
   const setSelectedId   = useChartStore(s => s.setSelectedDrawingId);
   const drawingsLocked  = useChartStore(s => s.drawingsLocked);
+  const timeframe       = useChartStore(s => s.timeframe);
 
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -89,7 +93,6 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
         removeDrawing(selectedId);
         setSelectedId(null);
       }
-      // Undo/Redo
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) redo(); else undo();
@@ -99,9 +102,8 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
         redo();
       }
     };
-    const up = (e: KeyboardEvent) => {
+    const up = (e: KeyboardEvent) =>
       setKeys({ ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
-    };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     return () => {
@@ -117,11 +119,48 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     return { x, y };
   };
 
+  // FROM XY con EXTRAPOLACIÓN: si el cursor está más allá de la última vela,
+  // calcula el tiempo basándose en la posición X y el espaciado de barras.
   const fromXY = (px: number, py: number): Point | null => {
-    const time = chart.timeScale().coordinateToTime(px);
+    let time: number | null = null;
+    const t = chart.timeScale().coordinateToTime(px);
+    if (t != null) {
+      time = Number(t);
+    } else if (candles.length > 0) {
+      // Extrapolar hacia adelante o atrás
+      const last = candles[candles.length - 1];
+      const first = candles[0];
+      const lastX = chart.timeScale().timeToCoordinate(last.time as Time);
+      const firstX = chart.timeScale().timeToCoordinate(first.time as Time);
+      if (lastX != null && px > lastX) {
+        // Después de la última vela
+        const tfSec = timeframe.seconds;
+        // Spacing real entre velas consecutivas
+        let barSpacing = 6;
+        if (candles.length >= 2) {
+          const x0 = chart.timeScale().timeToCoordinate(candles[candles.length - 2].time as Time);
+          const x1 = chart.timeScale().timeToCoordinate(candles[candles.length - 1].time as Time);
+          if (x0 != null && x1 != null) barSpacing = Math.max(1, x1 - x0);
+        }
+        const barsAhead = Math.round((px - lastX) / barSpacing);
+        time = last.time + barsAhead * tfSec;
+      } else if (firstX != null && px < firstX) {
+        // Antes de la primera vela (raro pero por las dudas)
+        const tfSec = timeframe.seconds;
+        let barSpacing = 6;
+        if (candles.length >= 2) {
+          const x0 = chart.timeScale().timeToCoordinate(candles[0].time as Time);
+          const x1 = chart.timeScale().timeToCoordinate(candles[1].time as Time);
+          if (x0 != null && x1 != null) barSpacing = Math.max(1, x1 - x0);
+        }
+        const barsBack = Math.round((firstX - px) / barSpacing);
+        time = first.time - barsBack * timeframe.seconds;
+      }
+    }
+
     const price = series.coordinateToPrice(py);
     if (time == null || price == null) return null;
-    return { time: Number(time), price: Number(price) };
+    return { time, price: Number(price) };
   };
 
   const getLocalXY = (clientX: number, clientY: number) => {
@@ -190,7 +229,6 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
 
     const onUp = () => {
       if (drag.mode !== "none") {
-        // Commit del drag: una sola entrada de historia para todo el movimiento
         commitDrag();
         setDrag({ mode: "none" });
       }
@@ -202,7 +240,7 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [drawings, drag, keys, candles, chartSize, drawingsLocked, activeTool, liveDrag, commitDrag]);
+  }, [drawings, drag, keys, candles, chartSize, drawingsLocked, activeTool, liveDrag, commitDrag, timeframe]);
 
   const onMouseDownSvg = (e: React.MouseEvent) => {
     const local = getLocalXY(e.clientX, e.clientY);
@@ -250,13 +288,17 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       const entry = p.price;
       const stop = side === "long" ? entry * (1 - r) : entry * (1 + r);
       const target = side === "long" ? entry * (1 + r * 2) : entry * (1 - r * 2);
+      // endTime: 50 barras hacia adelante por default
+      const endTime = p.time + timeframe.seconds * 50;
       addDrawing({
         id: uid(), kind: "order", side, entry, stop, target,
-        time: p.time, color: side === "long" ? "#22c55e" : "#ef4444",
-        entryColor: "#ffffff",
+        time: p.time, endTime,
+        color: side === "long" ? "#22c55e" : "#ef4444",
+        entryColor: side === "long" ? "#22c55e" : "#ef4444",
         stopColor: "#ef4444",
         targetColor: "#22c55e",
         size: 1,
+        lineStyle: "solid", // default: entry sólida; SL/TP usan dashedSL/TP propio en el render
       });
       setActiveTool("none");
       return;
@@ -381,7 +423,7 @@ function DrawingShape({
 }) {
   const w = d.width ?? 1.5;
   const dash = dashArray(d.lineStyle);
-  const handleR = 4.5;
+  const handleR = 5;
   const baseW = isHovered ? w + 0.5 : w;
   const handleProps = { r: handleR, fill: d.color, stroke: "#fff", strokeWidth: 1.5 };
 
@@ -494,7 +536,6 @@ function DrawingShape({
     const yTarget = toXY(d.time, d.target)?.y;
     if (!anchor || yEntry == null || yStop == null || yTarget == null) return null;
 
-    // Si tiene endTime, las líneas terminan ahí. Si no, van al final.
     const endX = d.endTime
       ? (toXY(d.endTime, d.entry)?.x ?? chartWidth)
       : chartWidth;
@@ -503,33 +544,54 @@ function DrawingShape({
     const stopColor   = d.stopColor   ?? "#ef4444";
     const targetColor = d.targetColor ?? "#22c55e";
 
+    // Por default: entry SÓLIDA, SL/TP DASHED (más TradingView).
+    // Si el usuario seteó un lineStyle explícito en el drawing, ese gana para entry.
+    // Para SL/TP, si lineStyle === "solid" => sólidas; si dashed/dotted o sin definir => dashed.
+    const entryDash = dash; // respeta lineStyle
+    const slTpDash = d.lineStyle === "solid" ? "" : (dash || "5,3");
+
     const rr = Math.abs(d.target - d.entry) / Math.abs(d.entry - d.stop || 1e-10);
 
     return (
       <g>
+        {/* Zona profit (verde) */}
         <rect x={anchor.x} y={Math.min(yEntry, yTarget)}
           width={endX - anchor.x} height={Math.abs(yTarget - yEntry)}
           fill="rgba(34,197,94,0.12)" />
+        {/* Zona riesgo (rojo) */}
         <rect x={anchor.x} y={Math.min(yEntry, yStop)}
           width={endX - anchor.x} height={Math.abs(yStop - yEntry)}
           fill="rgba(239,68,68,0.12)" />
+
+        {/* Entry — sólida por default */}
         <line x1={anchor.x} y1={yEntry} x2={endX} y2={yEntry}
-          stroke={entryColor} strokeWidth={baseW} />
+          stroke={entryColor} strokeWidth={baseW} strokeDasharray={entryDash} />
+        {/* Target — dashed por default */}
         <line x1={anchor.x} y1={yTarget} x2={endX} y2={yTarget}
-          stroke={targetColor} strokeWidth={baseW} strokeDasharray="4,3" />
+          stroke={targetColor} strokeWidth={baseW} strokeDasharray={slTpDash} />
+        {/* Stop — dashed por default */}
         <line x1={anchor.x} y1={yStop} x2={endX} y2={yStop}
-          stroke={stopColor} strokeWidth={baseW} strokeDasharray="4,3" />
+          stroke={stopColor} strokeWidth={baseW} strokeDasharray={slTpDash} />
+
+        {/* Etiqueta */}
         <rect x={anchor.x + 4} y={yEntry - 8} width={170} height={16} rx={2} fill={entryColor} />
         <text x={anchor.x + 8} y={yEntry + 4} fontSize="10" fill="#000" fontFamily="monospace">
           {d.side.toUpperCase()} @ {d.entry.toFixed(5)} RR {rr.toFixed(2)}
         </text>
+
         {isSelected && (
           <>
+            {/* Handle izquierdo (anchor) en cada línea */}
             <circle cx={anchor.x} cy={yEntry} {...handleProps} fill={entryColor} />
-            <circle cx={anchor.x + 30} cy={yStop} {...handleProps} fill={stopColor} />
-            <circle cx={anchor.x + 30} cy={yTarget} {...handleProps} fill={targetColor} />
-            {/* Handle del endTime (extremo derecho) */}
-            <circle cx={endX} cy={yEntry} r={4} fill={entryColor} stroke="#fff" strokeWidth={1.5} />
+            <circle cx={anchor.x} cy={yStop} {...handleProps} fill={stopColor} />
+            <circle cx={anchor.x} cy={yTarget} {...handleProps} fill={targetColor} />
+            {/* Handle DERECHO (endTime) */}
+            <rect x={endX - 4} y={yEntry - 4} width={8} height={8}
+              fill={entryColor} stroke="#fff" strokeWidth={1.5} />
+            <rect x={endX - 4} y={yStop - 4} width={8} height={8}
+              fill={stopColor} stroke="#fff" strokeWidth={1.5} />
+            <rect x={endX - 4} y={yTarget - 4} width={8} height={8}
+              fill={targetColor} stroke="#fff" strokeWidth={1.5} />
           </>
         )}
       </g>

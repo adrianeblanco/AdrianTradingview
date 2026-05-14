@@ -40,7 +40,6 @@ export function PriceChart() {
   const settings = useSettingsStore();
   const tz = getTimezone(settings.timezoneId);
 
-  // ---- Create chart ----
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
@@ -57,10 +56,12 @@ export function PriceChart() {
       timeScale: {
         timeVisible: true, secondsVisible: false,
         borderColor: settings.timeAxisBorderColor,
+        rightOffset: 30, // espacio a la derecha para mover dibujos al "futuro"
       },
       rightPriceScale: {
         borderColor: settings.priceAxisBorderColor,
         scaleMargins: { top: 0.08, bottom: 0.15 },
+        autoScale: true,
       },
       crosshair: {
         mode: 1,
@@ -69,10 +70,8 @@ export function PriceChart() {
       },
       autoSize: true,
       localization: {
-        // Aplicar offset de timezone a la formación de tiempos del eje
         timeFormatter: (t: number) => {
           const d = new Date((t + tz.offsetMinutes * 60) * 1000);
-          // YYYY-MM-DD HH:MM
           const pad = (n: number) => String(n).padStart(2, "0");
           return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
         },
@@ -111,7 +110,7 @@ export function PriceChart() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- Apply settings reactively ----
+  // Apply settings reactively
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -141,7 +140,6 @@ export function PriceChart() {
       },
     });
 
-    // Decimales: auto o manual
     const decimals = settings.priceDecimals >= 0 ? settings.priceDecimals : autoDecimals(symbol);
     candleSeriesRef.current?.applyOptions({
       upColor: settings.upColor,
@@ -158,7 +156,7 @@ export function PriceChart() {
     });
   }, [settings, tz.offsetMinutes, symbol]);
 
-  // ---- Chart lock ----
+  // Chart lock
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -168,7 +166,17 @@ export function PriceChart() {
     });
   }, [chartLocked]);
 
-  // ---- Load data ----
+  // FIX: cuando cambia el SÍMBOLO, forzar reset de la escala de precio.
+  // Sin esto, lightweight-charts mantiene la escala del símbolo anterior
+  // y los precios se ven todos pegados al borde.
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
+    series.priceScale().applyOptions({ autoScale: true });
+  }, [symbol]);
+
+  // Load data
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -193,7 +201,7 @@ export function PriceChart() {
     return () => { cancelled = true; };
   }, [symbol, timeframe, backtestMode, yStart, yEnd]);
 
-  // ---- Paint candles ----
+  // Paint candles
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series || candles.length === 0) return;
@@ -214,10 +222,12 @@ export function PriceChart() {
         })),
       );
     }
+    // FIX: después de setData, autoescalar precio y tiempo.
+    series.priceScale().applyOptions({ autoScale: true });
     chartRef.current?.timeScale().fitContent();
   }, [candles]);
 
-  // ---- EMAs ----
+  // EMAs
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || candles.length === 0) return;

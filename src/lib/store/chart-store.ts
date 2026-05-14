@@ -11,8 +11,6 @@ type Indicators = {
   rsi: boolean; macd: boolean; volume: boolean;
 };
 
-// Historia: snapshots de drawings, hasta 50.
-// Cada acción de mutación pushea uno. Undo retrocede el puntero, redo avanza.
 const MAX_HISTORY = 50;
 
 type State = {
@@ -52,15 +50,11 @@ type State = {
   clearDrawings: () => void;
   duplicateDrawing: (id: string) => void;
 
-  // Solo durante drag: NO crea entrada de historia (sería un spam)
   liveDrag: (id: string, next: Drawing) => void;
-  // Al soltar el drag, sí pushea
   commitDrag: () => void;
 
   undo: () => void;
   redo: () => void;
-  canUndo: () => boolean;
-  canRedo: () => boolean;
 
   setActiveTool: (t: DrawingTool) => void;
   setSelectedDrawingId: (id: string | null) => void;
@@ -72,16 +66,34 @@ type State = {
   setBacktest: (on: boolean, yearStart?: number, yearEnd?: number) => void;
 };
 
-// Helper: pushear snapshot
 function pushHistory(state: State, nextDrawings: Drawing[]): Partial<State> {
   const newHistory = state.history.slice(0, state.historyIndex + 1);
   newHistory.push(nextDrawings);
-  // Limitar
   while (newHistory.length > MAX_HISTORY) newHistory.shift();
   return {
     drawings: nextDrawings,
     history: newHistory,
     historyIndex: newHistory.length - 1,
+  };
+}
+
+// Validador de sesión: asegura que tenga todos los campos nuevos.
+// Si falta algo, lo completa con default. Esto soluciona el bug del color
+// (las sesiones del localStorage viejo no tenían `opacity`).
+function migrateSession(s: any): Session {
+  const def = DEFAULT_SESSIONS.find(ds => ds.id === s?.id) ?? DEFAULT_SESSIONS[0];
+  return {
+    id: s?.id ?? def.id,
+    label: s?.label ?? def.label,
+    startHourUTC: s?.startHourUTC ?? def.startHourUTC,
+    startMinUTC: s?.startMinUTC ?? def.startMinUTC,
+    endHourUTC: s?.endHourUTC ?? def.endHourUTC,
+    endMinUTC: s?.endMinUTC ?? def.endMinUTC,
+    color: typeof s?.color === "string" && s.color.startsWith("#") ? s.color : def.color,
+    opacity: typeof s?.opacity === "number" ? s.opacity : def.opacity,
+    borderOpacity: typeof s?.borderOpacity === "number" ? s.borderOpacity : def.borderOpacity,
+    enabled: s?.enabled ?? def.enabled,
+    emphasis: s?.emphasis ?? def.emphasis,
   };
 }
 
@@ -126,13 +138,15 @@ export const useChartStore = create<State>()(
           ),
         })),
       setSessions: (sessions) => set({ sessions }),
+
       updateSession: (id, patch) =>
         set((s) => ({
-          sessions: s.sessions.map(ss => ss.id === id ? { ...ss, ...patch } : ss),
+          sessions: s.sessions.map(ss =>
+            ss.id === id ? migrateSession({ ...ss, ...patch }) : ss,
+          ),
         })),
 
-      addDrawing: (d) =>
-        set((s) => pushHistory(s, [...s.drawings, d])),
+      addDrawing: (d) => set((s) => pushHistory(s, [...s.drawings, d])),
 
       updateDrawing: (id, patch) =>
         set((s) => pushHistory(
@@ -141,10 +155,7 @@ export const useChartStore = create<State>()(
         )),
 
       replaceDrawing: (id, next) =>
-        set((s) => pushHistory(
-          s,
-          s.drawings.map((d) => d.id === id ? next : d),
-        )),
+        set((s) => pushHistory(s, s.drawings.map((d) => d.id === id ? next : d))),
 
       removeDrawing: (id) =>
         set((s) => ({
@@ -153,10 +164,7 @@ export const useChartStore = create<State>()(
         })),
 
       clearDrawings: () =>
-        set((s) => ({
-          ...pushHistory(s, []),
-          selectedDrawingId: null,
-        })),
+        set((s) => ({ ...pushHistory(s, []), selectedDrawingId: null })),
 
       duplicateDrawing: (id) =>
         set((s) => {
@@ -170,15 +178,9 @@ export const useChartStore = create<State>()(
           };
         }),
 
-      // Live drag: muta drawings SIN tocar history
       liveDrag: (id, next) =>
-        set((s) => ({
-          drawings: s.drawings.map(d => d.id === id ? next : d),
-        })),
-
-      // Cuando suelta el mouse, snapshot el estado actual
-      commitDrag: () =>
-        set((s) => pushHistory(s, s.drawings)),
+        set((s) => ({ drawings: s.drawings.map(d => d.id === id ? next : d) })),
+      commitDrag: () => set((s) => pushHistory(s, s.drawings)),
 
       undo: () => {
         const s = get();
@@ -194,13 +196,8 @@ export const useChartStore = create<State>()(
         const s = get();
         if (s.historyIndex >= s.history.length - 1) return;
         const newIndex = s.historyIndex + 1;
-        set({
-          drawings: s.history[newIndex],
-          historyIndex: newIndex,
-        });
+        set({ drawings: s.history[newIndex], historyIndex: newIndex });
       },
-      canUndo: () => get().historyIndex > 0,
-      canRedo: () => get().historyIndex < get().history.length - 1,
 
       setActiveTool: (t) => set({ activeTool: t, selectedDrawingId: null }),
       setSelectedDrawingId: (id) => set({ selectedDrawingId: id }),
@@ -219,7 +216,16 @@ export const useChartStore = create<State>()(
     }),
     {
       name: "adrian-tradingview",
-      // No persistimos la historia: se reinicia al recargar
+      version: 2,
+      // Cuando rehidrata desde localStorage, migra sesiones viejas
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        if (Array.isArray(state.sessions)) {
+          state.sessions = state.sessions.map(migrateSession);
+        } else {
+          state.sessions = DEFAULT_SESSIONS;
+        }
+      },
       partialize: (s) => ({
         symbol: s.symbol,
         symbolName: s.symbolName,
@@ -230,6 +236,13 @@ export const useChartStore = create<State>()(
         chartLocked: s.chartLocked,
         drawingsLocked: s.drawingsLocked,
       }),
+      // Si migramos de v1 a v2, regeneramos sessions limpias
+      migrate: (persisted: any, version: number) => {
+        if (version < 2 && persisted) {
+          persisted.sessions = DEFAULT_SESSIONS;
+        }
+        return persisted;
+      },
     },
   ),
 );
