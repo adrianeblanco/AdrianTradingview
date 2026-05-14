@@ -10,12 +10,11 @@ import {
   type IChartApi,
   type ISeriesApi,
   type Time,
-  type LogicalRange,
 } from "lightweight-charts";
 import { useChartStore } from "@/lib/store/chart-store";
 import { TwelveDataProvider } from "@/lib/data/twelvedata";
 import { loadDukascopyRange } from "@/lib/data/dukascopy-csv";
-import { ema, rsi, macd, closesOf } from "@/lib/indicators";
+import { ema, closesOf } from "@/lib/indicators";
 import type { Candle } from "@/lib/data/types";
 import { SessionsOverlay } from "../sessions/SessionsOverlay";
 import { DrawingsOverlay } from "../drawing/DrawingsOverlay";
@@ -30,6 +29,7 @@ export function PriceChart() {
   const [candles, setCandles] = useState<Candle[]>([]);
   const [visibleRange, setVisibleRange] = useState<{ from: number; to: number } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [ready, setReady] = useState(false);
 
   const symbol       = useChartStore(s => s.symbol);
   const timeframe    = useChartStore(s => s.timeframe);
@@ -38,38 +38,45 @@ export function PriceChart() {
   const yStart       = useChartStore(s => s.backtestYearStart);
   const yEnd         = useChartStore(s => s.backtestYearEnd);
 
-  // -------- Crear chart una sola vez --------
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { color: "#0d1117" },
-        textColor: "#c9d1d9",
+        background: { color: "#131722" },     // azul oscuro TradingView
+        textColor: "#d1d4dc",
       },
       grid: {
-        vertLines: { color: "#1f2937" },
-        horzLines: { color: "#1f2937" },
+        vertLines: { color: "#1e222d" },
+        horzLines: { color: "#1e222d" },
       },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
-        borderColor: "#30363d",
+        borderColor: "#363c4e",
       },
-      rightPriceScale: { borderColor: "#30363d" },
-      crosshair: { mode: 1 },
+      rightPriceScale: { borderColor: "#363c4e" },
+      crosshair: {
+        mode: 1,
+        vertLine: { color: "#758696", style: 3, width: 1 },
+        horzLine: { color: "#758696", style: 3, width: 1 },
+      },
       autoSize: true,
     });
     chartRef.current = chart;
 
+    // Velas estilo TradingView: alcista = hueca/blanca, bajista = azul sólido
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#26a69a", downColor: "#ef5350",
-      borderVisible: false,
-      wickUpColor: "#26a69a", wickDownColor: "#ef5350",
+      upColor: "rgba(255, 255, 255, 0)",   // alcista: hueca (sin relleno)
+      downColor: "#2962ff",                  // bajista: azul TradingView
+      borderUpColor: "#ffffff",
+      borderDownColor: "#2962ff",
+      wickUpColor: "#ffffff",
+      wickDownColor: "#2962ff",
     });
     candleSeriesRef.current = candleSeries;
 
     const volSeries = chart.addSeries(HistogramSeries, {
-      color: "#26a69a",
+      color: "rgba(255,255,255,0.3)",
       priceFormat: { type: "volume" },
       priceScaleId: "",
     });
@@ -78,23 +85,22 @@ export function PriceChart() {
     });
     volSeriesRef.current = volSeries;
 
-    // Track visible range para overlays
     chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
       if (range) {
-        setVisibleRange({
-          from: Number(range.from),
-          to: Number(range.to),
-        });
+        setVisibleRange({ from: Number(range.from), to: Number(range.to) });
       }
     });
+
+    setReady(true);
 
     return () => {
       chart.remove();
       chartRef.current = null;
+      setReady(false);
     };
   }, []);
 
-  // -------- Cargar datos al cambiar símbolo / timeframe / modo --------
+  // Cargar datos
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -102,12 +108,8 @@ export function PriceChart() {
       try {
         let data: Candle[] = [];
         if (backtestMode) {
-          // Histórico de Dukascopy: símbolo sin slash, ej "EUR/USD" -> "EURUSD"
           const cleanSym = symbol.replace("/", "").replace("=F", "");
           data = await loadDukascopyRange(cleanSym, timeframe.value, yStart, yEnd);
-          if (data.length === 0) {
-            console.warn("[backtest] CSVs no encontrados. Subí archivos a /public/historical/");
-          }
         } else {
           data = await TwelveDataProvider.getCandles(symbol, timeframe.value, 500);
         }
@@ -120,12 +122,9 @@ export function PriceChart() {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [symbol, timeframe, backtestMode, yStart, yEnd]);
 
-  // -------- Actualizar velas en el chart --------
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series || candles.length === 0) return;
@@ -140,20 +139,20 @@ export function PriceChart() {
         candles.map(c => ({
           time: c.time as Time,
           value: c.volume ?? 0,
-          color: c.close >= c.open ? "rgba(38, 166, 154, 0.5)" : "rgba(239, 83, 80, 0.5)",
+          color: c.close >= c.open
+            ? "rgba(255, 255, 255, 0.25)"
+            : "rgba(41, 98, 255, 0.4)",
         })),
       );
     }
     chartRef.current?.timeScale().fitContent();
   }, [candles]);
 
-  // -------- Indicadores --------
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || candles.length === 0) return;
     const closes = closesOf(candles);
 
-    // Limpiar líneas previas
     Object.values(emaRefs.current).forEach(s => { if (s) chart.removeSeries(s); });
     emaRefs.current = {};
 
@@ -172,9 +171,9 @@ export function PriceChart() {
       emaRefs.current[key] = series;
     };
 
-    if (indicators.ema20)  addEMA(20,  "#2962ff", "ema20");
-    if (indicators.ema50)  addEMA(50,  "#ff9800", "ema50");
-    if (indicators.ema200) addEMA(200, "#e91e63", "ema200");
+    if (indicators.ema20)  addEMA(20,  "#ff9800", "ema20");
+    if (indicators.ema50)  addEMA(50,  "#f23645", "ema50");
+    if (indicators.ema200) addEMA(200, "#9c27b0", "ema200");
 
     if (volSeriesRef.current) {
       volSeriesRef.current.applyOptions({ visible: indicators.volume });
@@ -190,8 +189,7 @@ export function PriceChart() {
       )}
       <div ref={containerRef} className="h-full w-full" />
 
-      {/* Overlays SVG que coordinan con el chart */}
-      {chartRef.current && candleSeriesRef.current && visibleRange && (
+      {ready && chartRef.current && candleSeriesRef.current && visibleRange && (
         <>
           <SessionsOverlay
             chart={chartRef.current}
@@ -200,6 +198,7 @@ export function PriceChart() {
           <DrawingsOverlay
             chart={chartRef.current}
             series={candleSeriesRef.current}
+            candles={candles}
           />
         </>
       )}

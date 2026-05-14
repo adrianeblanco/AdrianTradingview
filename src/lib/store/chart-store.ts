@@ -16,22 +16,17 @@ type Indicators = {
 };
 
 type State = {
-  // Selección actual
   symbol: string;
   symbolName: string;
   timeframe: Timeframe;
 
-  // Indicadores
   indicators: Indicators;
-
-  // Sesiones
   sessions: Session[];
 
-  // Drawing
   drawings: Drawing[];
   activeTool: DrawingTool;
+  selectedDrawingId: string | null;
 
-  // Backtest
   backtestMode: boolean;
   backtestYearStart: number;
   backtestYearEnd: number;
@@ -42,10 +37,17 @@ type State = {
   toggleIndicator: (k: keyof Indicators) => void;
   toggleSession: (id: string) => void;
   setSessions: (sessions: Session[]) => void;
+
   addDrawing: (d: Drawing) => void;
+  updateDrawing: (id: string, patch: Partial<Drawing>) => void;
+  replaceDrawing: (id: string, next: Drawing) => void;
   removeDrawing: (id: string) => void;
   clearDrawings: () => void;
+  duplicateDrawing: (id: string) => void;
+
   setActiveTool: (t: DrawingTool) => void;
+  setSelectedDrawingId: (id: string | null) => void;
+
   setBacktest: (on: boolean, yearStart?: number, yearEnd?: number) => void;
 };
 
@@ -64,6 +66,7 @@ export const useChartStore = create<State>()(
       sessions: DEFAULT_SESSIONS,
       drawings: [],
       activeTool: "none",
+      selectedDrawingId: null,
 
       backtestMode: false,
       backtestYearStart: 2023,
@@ -80,11 +83,40 @@ export const useChartStore = create<State>()(
           ),
         })),
       setSessions: (sessions) => set({ sessions }),
+
       addDrawing: (d) => set((s) => ({ drawings: [...s.drawings, d] })),
+
+      updateDrawing: (id, patch) =>
+        set((s) => ({
+          drawings: s.drawings.map((d) => (d.id === id ? ({ ...d, ...patch } as Drawing) : d)),
+        })),
+
+      replaceDrawing: (id, next) =>
+        set((s) => ({
+          drawings: s.drawings.map((d) => (d.id === id ? next : d)),
+        })),
+
       removeDrawing: (id) =>
-        set((s) => ({ drawings: s.drawings.filter((d) => d.id !== id) })),
-      clearDrawings: () => set({ drawings: [] }),
-      setActiveTool: (t) => set({ activeTool: t }),
+        set((s) => ({
+          drawings: s.drawings.filter((d) => d.id !== id),
+          selectedDrawingId: s.selectedDrawingId === id ? null : s.selectedDrawingId,
+        })),
+
+      clearDrawings: () => set({ drawings: [], selectedDrawingId: null }),
+
+      duplicateDrawing: (id) =>
+        set((s) => {
+          const orig = s.drawings.find((d) => d.id === id);
+          if (!orig) return s;
+          const copy = { ...orig, id: Math.random().toString(36).slice(2, 10) } as Drawing;
+          // Offset levemente para que no se superponga
+          if (copy.kind === "hline") copy.price *= 1.001;
+          return { drawings: [...s.drawings, copy], selectedDrawingId: copy.id };
+        }),
+
+      setActiveTool: (t) => set({ activeTool: t, selectedDrawingId: null }),
+      setSelectedDrawingId: (id) => set({ selectedDrawingId: id }),
+
       setBacktest: (on, yearStart, yearEnd) =>
         set({
           backtestMode: on,
