@@ -1,12 +1,30 @@
 // src/components/drawing/DrawingsOverlay.tsx
 "use client";
-// Capa SVG sobre el chart. Maneja:
-//  - Dibujar nuevos (modo activeTool)
-//  - Seleccionar dibujos existentes (click sobre ellos)
-//  - Arrastrar handles y cuerpos
-//  - Hotkeys: Ctrl (snap a high/low), Shift (línea horizontal)
+//
+// PROBLEMA QUE ARREGLA ESTA VERSIÓN
+// ================================
+// La v2 ponía pointer-events="auto" siempre en el SVG, lo que capturaba
+// TODOS los clicks y el chart no recibía nada (no podías hacer pan/zoom).
+//
+// SOLUCIÓN
+// ========
+// Pointer-events DINÁMICO:
+//   - "none" cuando: no hay tool activa, no estás arrastrando, y no hay
+//     hover sobre un dibujo. Los clicks pasan al chart de abajo.
+//   - "auto" cuando: hay tool activa, drag activo, o hover sobre dibujo.
+//     El SVG captura clicks.
+//
+// HOVER DETECTION SIN BLOQUEAR
+// ============================
+// Para saber si el cursor está sobre un dibujo SIN bloquear el chart,
+// usamos un mousemove listener en el contenedor padre (que es absolute
+// inset-0 pointer-events-none, NO captura clicks pero sí mousemove desde
+// abajo del SVG porque el chart está debajo y el evento burbujea).
+//
+// Truco: pongo un segundo elemento <div> arriba del SVG con
+// pointer-events: none que SOLO escucha mousemove para tracking.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IChartApi, ISeriesApi, Time } from "lightweight-charts";
 import { useChartStore } from "@/lib/store/chart-store";
 import {
@@ -28,13 +46,11 @@ function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
-// Tipo del estado interno mientras el usuario arrastra
 type DragState =
   | { mode: "none" }
   | { mode: "handle"; drawingId: string; handle: Handle }
-  | { mode: "body"; drawingId: string; startTime: number; startPrice: number };
+  | { mode: "body"; drawingId: string; lastTime: number; lastPrice: number };
 
-// Mientras dibujás (no es lo mismo que arrastrar uno existente)
 type DrawingInProgress = { p1: Point };
 
 export function DrawingsOverlay({ chart, series, candles }: Props) {
@@ -46,15 +62,19 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
   const setActiveTool   = useChartStore(s => s.setActiveTool);
   const selectedId      = useChartStore(s => s.selectedDrawingId);
   const setSelectedId   = useChartStore(s => s.setSelectedDrawingId);
+  const drawingsLocked  = useChartStore(s => s.drawingsLocked);
 
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+
   const [chartSize, setChartSize] = useState({ w: 0, h: 0 });
   const [pending, setPending] = useState<DrawingInProgress | null>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [drag, setDrag] = useState<DragState>({ mode: "none" });
   const [keys, setKeys] = useState({ ctrl: false, shift: false });
+  const [hoveredDrawingId, setHoveredDrawingId] = useState<string | null>(null);
 
-  // Forzar redibujo cuando cambia pan/zoom
+  // Forzar redibujo en pan/zoom
   const [, tick] = useState(0);
   useEffect(() => {
     const handler = () => tick(n => n + 1);
@@ -62,28 +82,30 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     return () => chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
   }, [chart]);
 
-  // Mantener tamaño del SVG sincronizado con el contenedor
+  // Tamaño del SVG
   useEffect(() => {
-    if (!svgRef.current) return;
+    if (!wrapperRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const r = entries[0].contentRect;
       setChartSize({ w: r.width, h: r.height });
     });
-    ro.observe(svgRef.current);
+    ro.observe(wrapperRef.current);
     return () => ro.disconnect();
   }, []);
 
-  // Hotkeys globales: Ctrl y Shift
+  // Hotkeys
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      setKeys(k => ({ ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }));
+      setKeys({ ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
       if (e.key === "Escape") {
         setActiveTool("none");
         setPending(null);
         setSelectedId(null);
       }
-      if (e.key === "Delete" || e.key === "Backspace") {
-        if (selectedId) {
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+        // Solo si el foco NO está en un input
+        const t = e.target as HTMLElement;
+        if (t.tagName !== "INPUT" && t.tagName !== "TEXTAREA") {
           removeDrawing(selectedId);
           setSelectedId(null);
         }
@@ -100,7 +122,7 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     };
   }, [selectedId, removeDrawing, setSelectedId, setActiveTool]);
 
-  // Helpers de conversión
+  // Helpers
   const toXY: ToXY = (time, price) => {
     const x = chart.timeScale().timeToCoordinate(time as Time);
     const y = series.priceToCoordinate(price);
@@ -116,12 +138,11 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
   };
 
   const getLocalXY = (clientX: number, clientY: number) => {
-    if (!svgRef.current) return null;
-    const r = svgRef.current.getBoundingClientRect();
+    if (!wrapperRef.current) return null;
+    const r = wrapperRef.current.getBoundingClientRect();
     return { x: clientX - r.left, y: clientY - r.top };
   };
 
-  // Aplica modificadores Ctrl/Shift al punto en construcción
   const applyModifiers = (raw: Point, anchor: Point | null): Point => {
     let p = raw;
     if (keys.ctrl) {
@@ -129,100 +150,131 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       if (snap) p = snap.point;
     }
     if (keys.shift && anchor) {
-      // Forzar línea horizontal: mismo precio que el anchor
       p = { time: p.time, price: anchor.price };
     }
     return p;
   };
 
-  // ---------- MOUSE EVENTS ----------
+  // ----------- HOVER TRACKING (sin capturar clicks) -----------
+  // Este listener vive en el wrapper que es pointer-events: none por defecto.
+  // No bloquea el chart pero podemos detectar la posición del cursor mientras
+  // se mueve sobre el área del chart.
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    // Listener en el window para captar movimiento aunque el wrapper sea passthrough
+    const onMove = (e: MouseEvent) => {
+      const local = getLocalXY(e.clientX, e.clientY);
+      if (!local) return;
+      // Sólo actualizamos si está dentro del wrapper
+      if (
+        local.x < 0 || local.x > chartSize.w ||
+        local.y < 0 || local.y > chartSize.h
+      ) {
+        setCursor(null);
+        setHoveredDrawingId(null);
+        return;
+      }
+      setCursor(local);
 
-  const onMouseDown = (e: React.MouseEvent) => {
+      // Drag activo: mover y SALIR
+      if (drag.mode !== "none") {
+        const p = fromXY(local.x, local.y);
+        if (!p) return;
+        const target = drawings.find(d => d.id === drag.drawingId);
+        if (!target) return;
+
+        if (drag.mode === "handle") {
+          let snapped = p;
+          if (keys.ctrl) {
+            const s = snapToHighLow(p, candles);
+            if (s) snapped = s.point;
+          }
+          replaceDrawing(drag.drawingId, moveHandle(target, drag.handle, snapped));
+        } else if (drag.mode === "body") {
+          // Delta 1:1 desde la última posición (no desde el inicio)
+          const dTime = p.time - drag.lastTime;
+          const dPrice = p.price - drag.lastPrice;
+          replaceDrawing(drag.drawingId, moveBody(target, dTime, dPrice));
+          // Actualizamos lastTime/lastPrice para el próximo frame
+          setDrag({ mode: "body", drawingId: drag.drawingId, lastTime: p.time, lastPrice: p.price });
+        }
+        return;
+      }
+
+      // Hover detection (solo si no está bloqueado y no hay tool activa)
+      if (drawingsLocked || activeTool !== "none") {
+        setHoveredDrawingId(null);
+        return;
+      }
+      const hit = hitTest(local.x, local.y, drawings, toXY, chartSize.w);
+      setHoveredDrawingId(hit ? hit.drawing.id : null);
+    };
+
+    const onUp = () => {
+      if (drag.mode !== "none") setDrag({ mode: "none" });
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [
+    drawings, drag, keys, candles, chartSize, drawingsLocked, activeTool,
+    chart, series, replaceDrawing,
+  ]);
+
+  // ----------- CLICKS / MOUSEDOWN sobre el SVG -----------
+
+  const onMouseDownSvg = (e: React.MouseEvent) => {
     const local = getLocalXY(e.clientX, e.clientY);
     if (!local) return;
 
-    // 1) Si hay tool activa, NO selecciono ni arrastro, estoy dibujando
+    // Tool activa: el click colocará un punto (manejado en onClick)
     if (activeTool !== "none") return;
 
-    // 2) Hit test sobre lo dibujado
+    if (drawingsLocked) return;
+
     const hit = hitTest(local.x, local.y, drawings, toXY, chartSize.w);
     if (!hit) {
       setSelectedId(null);
       return;
     }
-
     setSelectedId(hit.drawing.id);
 
     if (hit.type === "handle") {
       setDrag({ mode: "handle", drawingId: hit.drawing.id, handle: hit.handle });
+      e.preventDefault();
+      e.stopPropagation();
     } else if (hit.type === "body") {
       const p = fromXY(local.x, local.y);
       if (!p) return;
       setDrag({
         mode: "body",
         drawingId: hit.drawing.id,
-        startTime: p.time,
-        startPrice: p.price,
+        lastTime: p.time,
+        lastPrice: p.price,
       });
-    }
-    e.preventDefault();
-  };
-
-  const onMouseMove = (e: React.MouseEvent) => {
-    const local = getLocalXY(e.clientX, e.clientY);
-    if (!local) return;
-    setCursor(local);
-
-    // Arrastre activo
-    if (drag.mode !== "none") {
-      const p = fromXY(local.x, local.y);
-      if (!p) return;
-
-      const target = drawings.find(d => d.id === drag.drawingId);
-      if (!target) return;
-
-      if (drag.mode === "handle") {
-        let snapped = p;
-        if (keys.ctrl) {
-          const snap = snapToHighLow(p, candles);
-          if (snap) snapped = snap.point;
-        }
-        const next = moveHandle(target, drag.handle, snapped);
-        replaceDrawing(drag.drawingId, next);
-      } else if (drag.mode === "body") {
-        const dTime = p.time - drag.startTime;
-        const dPrice = p.price - drag.startPrice;
-        const next = moveBody(target, dTime, dPrice);
-        replaceDrawing(drag.drawingId, next);
-      }
-      return;
+      e.preventDefault();
+      e.stopPropagation();
     }
   };
 
-  const onMouseUp = () => {
-    if (drag.mode === "body") {
-      // Al soltar, actualizamos el punto de inicio para que el siguiente drag
-      // sea relativo a la posición actual. Más simple: limpiar drag.
-    }
-    setDrag({ mode: "none" });
-  };
-
-  const onClick = (e: React.MouseEvent) => {
-    // Si está dibujando con activeTool, este click ES para colocar puntos
+  const onClickSvg = (e: React.MouseEvent) => {
     if (activeTool === "none") return;
-
     const local = getLocalXY(e.clientX, e.clientY);
     if (!local) return;
     let p = fromXY(local.x, local.y);
     if (!p) return;
 
-    // Aplicar modifier Ctrl al primer punto también
     if (keys.ctrl) {
-      const snap = snapToHighLow(p, candles);
-      if (snap) p = snap.point;
+      const s = snapToHighLow(p, candles);
+      if (s) p = s.point;
     }
 
-    // Tools de 1 click
+    // 1 click
     if (activeTool === "hline") {
       addDrawing({ id: uid(), kind: "hline", price: p.price, color: "#facc15" });
       setActiveTool("none");
@@ -242,13 +294,13 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
       return;
     }
 
-    // Tools de 2 clicks
+    // 2 clicks
     if (!pending) {
       setPending({ p1: p });
       return;
     }
     const p1 = pending.p1;
-    const p2 = applyModifiers(p, p1); // aplicar shift respecto a p1
+    const p2 = applyModifiers(p, p1);
     setPending(null);
 
     if (activeTool === "trendline") {
@@ -261,27 +313,26 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     setActiveTool("none");
   };
 
-  // ---------- RENDER ----------
+  // ----------- POINTER EVENTS DINÁMICOS -----------
+  // El SVG captura clicks SOLO cuando hay algo que hacer.
+  const svgNeedsClicks =
+    activeTool !== "none" ||
+    drag.mode !== "none" ||
+    hoveredDrawingId !== null;
 
-  const pointerEvents = activeTool === "none" && drag.mode === "none"
-    ? "auto"     // siempre activo: para detectar clicks sobre dibujos existentes
-    : "auto";
-  const cursorStyle = activeTool !== "none" ? "crosshair" : drag.mode !== "none" ? "grabbing" : "default";
-
-  // Convertir cursor a punto para preview (con modifiers aplicados)
+  // Preview point
   const cursorPoint = cursor ? fromXY(cursor.x, cursor.y) : null;
   const previewPoint = cursorPoint
     ? applyModifiers(cursorPoint, pending?.p1 ?? null)
     : null;
   const previewXY = previewPoint ? toXY(previewPoint.time, previewPoint.price) : null;
 
-  // Punto de snap visual (sólo si Ctrl está activo y hay candidato)
-  const snapHint = (keys.ctrl && cursorPoint)
+  const snapHint = (keys.ctrl && cursorPoint && activeTool !== "none")
     ? snapToHighLow(cursorPoint, candles)
     : null;
   const snapXY = snapHint ? toXY(snapHint.point.time, snapHint.point.price) : null;
 
-  // Posición de la floating toolbar: la pegamos al p2 (o al precio) del seleccionado
+  // Toolbar position
   const selected = drawings.find(d => d.id === selectedId);
   let toolbarPos: { x: number; y: number } | null = null;
   if (selected) {
@@ -297,19 +348,34 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
     }
   }
 
+  const cursorStyle =
+    drag.mode === "body" ? "grabbing" :
+    drag.mode === "handle" ? "grabbing" :
+    activeTool !== "none" ? "crosshair" :
+    hoveredDrawingId ? "pointer" :
+    "default";
+
   return (
-    <>
+    <div
+      ref={wrapperRef}
+      className="absolute inset-0"
+      style={{
+        pointerEvents: "none",  // EL WRAPPER NO CAPTURA NADA
+        zIndex: 3,
+      }}
+    >
       <svg
         ref={svgRef}
         className="absolute inset-0 h-full w-full"
-        style={{ zIndex: 3, pointerEvents, cursor: cursorStyle, userSelect: "none" }}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={() => { setCursor(null); setDrag({ mode: "none" }); }}
-        onClick={onClick}
+        style={{
+          pointerEvents: svgNeedsClicks ? "auto" : "none",
+          cursor: cursorStyle,
+          userSelect: "none",
+        }}
+        onMouseDown={onMouseDownSvg}
+        onClick={onClickSvg}
       >
-        {/* Preview del primer punto colocado */}
+        {/* Preview de dibujo en progreso */}
         {pending && (() => {
           const a = toXY(pending.p1.time, pending.p1.price);
           if (!a || !previewXY) return null;
@@ -332,7 +398,7 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
           );
         })()}
 
-        {/* Indicador de snap (puntito cuando Ctrl está activo) */}
+        {/* Indicador snap */}
         {snapXY && (
           <g>
             <circle cx={snapXY.x} cy={snapXY.y} r={5}
@@ -343,7 +409,6 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
           </g>
         )}
 
-        {/* Dibujos persistidos */}
         {drawings.map(d => (
           <DrawingShape
             key={d.id}
@@ -351,31 +416,37 @@ export function DrawingsOverlay({ chart, series, candles }: Props) {
             toXY={toXY}
             chartWidth={chartSize.w}
             isSelected={d.id === selectedId}
+            isHovered={d.id === hoveredDrawingId}
           />
         ))}
       </svg>
 
-      {/* Toolbar flotante */}
+      {/* Toolbar flotante: vive fuera del SVG para poder tener pointer-events propios */}
       {selected && toolbarPos && (
-        <FloatingToolbar x={toolbarPos.x} y={toolbarPos.y} />
+        <div style={{ pointerEvents: "auto" }}>
+          <FloatingToolbar x={toolbarPos.x} y={toolbarPos.y} chartWidth={chartSize.w} />
+        </div>
       )}
-    </>
+    </div>
   );
 }
 
-// ---------------- Subcomponente: cada dibujo ----------------
+// ---------------- SHAPES ----------------
 
 function DrawingShape({
-  d, toXY, chartWidth, isSelected,
+  d, toXY, chartWidth, isSelected, isHovered,
 }: {
   d: Drawing;
   toXY: ToXY;
   chartWidth: number;
   isSelected: boolean;
+  isHovered: boolean;
 }) {
   const w = d.width ?? 1.5;
   const dash = dashArray(d.lineStyle);
-  const handleR = 4;
+  const handleR = 4.5;
+  const baseW = isHovered ? w + 0.5 : w;
+
   const handleProps = {
     r: handleR,
     fill: d.color,
@@ -389,9 +460,10 @@ function DrawingShape({
     return (
       <g>
         <line x1={0} y1={xy.y} x2="100%" y2={xy.y}
-          stroke={d.color} strokeWidth={w} strokeDasharray={dash || "6,3"} />
+          stroke={d.color} strokeWidth={baseW} strokeDasharray={dash || "6,3"}
+          opacity={isHovered || isSelected ? 1 : 0.85} />
         <rect x={6} y={xy.y - 9} width={62} height={16} rx={2}
-          fill={d.color} opacity={0.85} />
+          fill={d.color} opacity={0.9} />
         <text x={10} y={xy.y + 4} fontSize="10" fill="#000" fontFamily="monospace">
           {d.price.toFixed(5)}
         </text>
@@ -409,7 +481,7 @@ function DrawingShape({
     return (
       <g>
         <line x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-          stroke={d.color} strokeWidth={w} strokeDasharray={dash} />
+          stroke={d.color} strokeWidth={baseW} strokeDasharray={dash} />
         {isSelected && (
           <>
             <circle cx={a.x} cy={a.y} {...handleProps} />
@@ -437,7 +509,7 @@ function DrawingShape({
           x={Math.min(a.x, b.x)} y={Math.min(a.y, b.y)}
           width={Math.abs(b.x - a.x)} height={Math.abs(b.y - a.y)}
           fill={dPrice >= 0 ? "rgba(34,197,94,0.10)" : "rgba(239,68,68,0.10)"}
-          stroke={d.color} strokeWidth={w} strokeDasharray={dash || "3,3"}
+          stroke={d.color} strokeWidth={baseW} strokeDasharray={dash || "3,3"}
         />
         <rect x={b.x + 4} y={b.y - 30} width={120} height={42} rx={3}
           fill="#0d1117" stroke={d.color} />
@@ -472,7 +544,7 @@ function DrawingShape({
           return (
             <g key={level}>
               <line x1={x1} y1={y} x2="100%" y2={y}
-                stroke={d.color} strokeWidth={w * 0.6} strokeDasharray={dash || "2,2"} opacity={0.75} />
+                stroke={d.color} strokeWidth={baseW * 0.6} strokeDasharray={dash || "2,2"} opacity={0.75} />
               <text x={x1 + 4} y={y - 2} fontSize="9" fill={d.color} fontFamily="monospace">
                 {(level * 100).toFixed(1)}%  {priceAtLevel.toFixed(5)}
               </text>
@@ -480,7 +552,7 @@ function DrawingShape({
           );
         })}
         <line x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-          stroke={d.color} strokeWidth={w * 1.2} />
+          stroke={d.color} strokeWidth={baseW * 1.2} />
         {isSelected && (
           <>
             <circle cx={a.x} cy={a.y} {...handleProps} />
@@ -507,11 +579,11 @@ function DrawingShape({
           width="100%" height={Math.abs(yStop - yEntry)}
           fill="rgba(239,68,68,0.12)" />
         <line x1={anchor.x} y1={yEntry} x2="100%" y2={yEntry}
-          stroke={d.color} strokeWidth={w} />
+          stroke={d.color} strokeWidth={baseW} />
         <line x1={anchor.x} y1={yTarget} x2="100%" y2={yTarget}
-          stroke="#22c55e" strokeWidth={w} strokeDasharray="4,3" />
+          stroke="#22c55e" strokeWidth={baseW} strokeDasharray="4,3" />
         <line x1={anchor.x} y1={yStop} x2="100%" y2={yStop}
-          stroke="#ef4444" strokeWidth={w} strokeDasharray="4,3" />
+          stroke="#ef4444" strokeWidth={baseW} strokeDasharray="4,3" />
         <rect x={anchor.x + 4} y={yEntry - 8} width={150} height={16} rx={2} fill={d.color} />
         <text x={anchor.x + 8} y={yEntry + 4} fontSize="10" fill="#000" fontFamily="monospace">
           {d.side.toUpperCase()} @ {d.entry.toFixed(5)} RR {rr.toFixed(2)}

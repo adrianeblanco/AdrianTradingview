@@ -7,6 +7,8 @@ import { BacktestPanel } from "@/components/backtest/BacktestPanel";
 import { DrawingToolbar } from "@/components/drawing/DrawingToolbar";
 import { HotkeyHint } from "@/components/drawing/HotkeyHint";
 import { PriceChart } from "@/components/chart/PriceChart";
+import { SettingsButton } from "@/components/settings/SettingsButton";
+import { SettingsDrawer } from "@/components/settings/SettingsDrawer";
 
 export default function Page() {
   return (
@@ -21,6 +23,8 @@ export default function Page() {
         <BacktestPanel />
         <div className="flex-1" />
         <SessionsPanel />
+        <div className="mx-2 h-6 w-px bg-[#363c4e]" />
+        <SettingsButton />
       </header>
 
       <div className="flex flex-1 overflow-hidden">
@@ -35,6 +39,8 @@ export default function Page() {
         <span>Datos: TwelveData + Dukascopy CSV</span>
         <span>Powered by lightweight-charts (TradingView, Apache 2.0)</span>
       </footer>
+
+      <SettingsDrawer />
     </div>
   );
 }

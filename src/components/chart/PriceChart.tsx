@@ -12,6 +12,7 @@ import {
   type Time,
 } from "lightweight-charts";
 import { useChartStore } from "@/lib/store/chart-store";
+import { useSettingsStore } from "@/lib/store/settings-store";
 import { TwelveDataProvider } from "@/lib/data/twelvedata";
 import { loadDukascopyRange } from "@/lib/data/dukascopy-csv";
 import { ema, closesOf } from "@/lib/indicators";
@@ -32,51 +33,62 @@ export function PriceChart() {
   const [ready, setReady] = useState(false);
 
   const symbol       = useChartStore(s => s.symbol);
+  const symbolName   = useChartStore(s => s.symbolName);
   const timeframe    = useChartStore(s => s.timeframe);
   const indicators   = useChartStore(s => s.indicators);
   const backtestMode = useChartStore(s => s.backtestMode);
   const yStart       = useChartStore(s => s.backtestYearStart);
   const yEnd         = useChartStore(s => s.backtestYearEnd);
+  const chartLocked  = useChartStore(s => s.chartLocked);
 
+  // Settings (re-render cuando cambian)
+  const settings = useSettingsStore();
+
+  // ---- Crear chart una sola vez ----
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { color: "#131722" },     // azul oscuro TradingView
-        textColor: "#d1d4dc",
+        background: { color: settings.bgColor },
+        textColor: settings.textColor,
+        fontFamily: settings.fontFamily,
+        fontSize: settings.fontSize,
       },
       grid: {
-        vertLines: { color: "#1e222d" },
-        horzLines: { color: "#1e222d" },
+        vertLines: { color: settings.gridVertColor, visible: settings.gridVisible },
+        horzLines: { color: settings.gridHorzColor, visible: settings.gridVisible },
       },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
-        borderColor: "#363c4e",
+        borderColor: settings.timeAxisBorderColor,
       },
-      rightPriceScale: { borderColor: "#363c4e" },
+      rightPriceScale: {
+        borderColor: settings.priceAxisBorderColor,
+        scaleMargins: { top: 0.08, bottom: 0.15 },
+      },
       crosshair: {
         mode: 1,
-        vertLine: { color: "#758696", style: 3, width: 1 },
-        horzLine: { color: "#758696", style: 3, width: 1 },
+        vertLine: { color: settings.crosshairColor, style: 3, width: 1 },
+        horzLine: { color: settings.crosshairColor, style: 3, width: 1 },
       },
       autoSize: true,
+      // Watermark hace falta llamada extra en lightweight-charts v5 con createTextWatermark
     });
     chartRef.current = chart;
 
-    // Velas estilo TradingView: alcista = hueca/blanca, bajista = azul sólido
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "rgba(255, 255, 255, 0)",   // alcista: hueca (sin relleno)
-      downColor: "#2962ff",                  // bajista: azul TradingView
-      borderUpColor: "#ffffff",
-      borderDownColor: "#2962ff",
-      wickUpColor: "#ffffff",
-      wickDownColor: "#2962ff",
+      upColor: settings.upColor,
+      borderUpColor: settings.upBorderColor,
+      wickUpColor: settings.upWickColor,
+      downColor: settings.downColor,
+      borderDownColor: settings.downBorderColor,
+      wickDownColor: settings.downWickColor,
     });
     candleSeriesRef.current = candleSeries;
 
     const volSeries = chart.addSeries(HistogramSeries, {
-      color: "rgba(255,255,255,0.3)",
+      color: "rgba(255,255,255,0.25)",
       priceFormat: { type: "volume" },
       priceScaleId: "",
     });
@@ -92,15 +104,64 @@ export function PriceChart() {
     });
 
     setReady(true);
-
     return () => {
       chart.remove();
       chartRef.current = null;
       setReady(false);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Cargar datos
+  // ---- Aplicar settings reactivamente al chart ----
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.applyOptions({
+      layout: {
+        background: { color: settings.bgColor },
+        textColor: settings.textColor,
+        fontFamily: settings.fontFamily,
+        fontSize: settings.fontSize,
+      },
+      grid: {
+        vertLines: { color: settings.gridVertColor, visible: settings.gridVisible },
+        horzLines: { color: settings.gridHorzColor, visible: settings.gridVisible },
+      },
+      timeScale: { borderColor: settings.timeAxisBorderColor },
+      rightPriceScale: { borderColor: settings.priceAxisBorderColor },
+      crosshair: {
+        vertLine: { color: settings.crosshairColor },
+        horzLine: { color: settings.crosshairColor },
+      },
+    });
+    candleSeriesRef.current?.applyOptions({
+      upColor: settings.upColor,
+      borderUpColor: settings.upBorderColor,
+      wickUpColor: settings.upWickColor,
+      downColor: settings.downColor,
+      borderDownColor: settings.downBorderColor,
+      wickDownColor: settings.downWickColor,
+      ...(settings.priceDecimals >= 0 ? {
+        priceFormat: {
+          type: "price" as const,
+          precision: settings.priceDecimals,
+          minMove: 1 / Math.pow(10, settings.priceDecimals),
+        },
+      } : {}),
+    });
+  }, [settings]);
+
+  // ---- Aplicar candado al chart ----
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.applyOptions({
+      handleScroll: !chartLocked,
+      handleScale: !chartLocked,
+    });
+  }, [chartLocked]);
+
+  // ---- Cargar datos ----
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -125,6 +186,7 @@ export function PriceChart() {
     return () => { cancelled = true; };
   }, [symbol, timeframe, backtestMode, yStart, yEnd]);
 
+  // ---- Pintar velas ----
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series || candles.length === 0) return;
@@ -141,13 +203,14 @@ export function PriceChart() {
           value: c.volume ?? 0,
           color: c.close >= c.open
             ? "rgba(255, 255, 255, 0.25)"
-            : "rgba(41, 98, 255, 0.4)",
+            : "rgba(91, 156, 246, 0.4)",
         })),
       );
     }
     chartRef.current?.timeScale().fitContent();
   }, [candles]);
 
+  // ---- Indicadores EMA ----
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || candles.length === 0) return;
@@ -158,17 +221,17 @@ export function PriceChart() {
 
     const addEMA = (period: number, color: string, key: string) => {
       const data = ema(closes, period);
-      const series = chart.addSeries(LineSeries, {
+      const s = chart.addSeries(LineSeries, {
         color, lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: false,
       });
-      series.setData(
+      s.setData(
         candles
           .map((c, i) => ({ time: c.time as Time, value: data[i] }))
           .filter(p => p.value !== null) as { time: Time; value: number }[],
       );
-      emaRefs.current[key] = series;
+      emaRefs.current[key] = s;
     };
 
     if (indicators.ema20)  addEMA(20,  "#ff9800", "ema20");
@@ -181,12 +244,31 @@ export function PriceChart() {
   }, [candles, indicators]);
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" style={{ background: settings.bgColor }}>
       {loading && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 text-sm text-white">
           Cargando datos…
         </div>
       )}
+
+      {/* Watermark del símbolo */}
+      {settings.watermarkVisible && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center"
+             style={{ zIndex: 1 }}>
+          <div className="select-none text-center">
+            <div className="text-7xl font-bold text-white/[0.03]">{symbol}</div>
+            <div className="mt-2 text-base text-white/[0.04]">{symbolName}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Indicador de candado activo */}
+      {chartLocked && (
+        <div className="pointer-events-none absolute right-16 top-3 z-20 rounded bg-orange-600/90 px-2 py-1 text-[10px] font-semibold text-white shadow">
+          🔒 Chart bloqueado
+        </div>
+      )}
+
       <div ref={containerRef} className="h-full w-full" />
 
       {ready && chartRef.current && candleSeriesRef.current && visibleRange && (

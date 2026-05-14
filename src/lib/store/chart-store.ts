@@ -27,6 +27,13 @@ type State = {
   activeTool: DrawingTool;
   selectedDrawingId: string | null;
 
+  // Candados
+  chartLocked: boolean;       // bloquea pan/zoom del chart
+  drawingsLocked: boolean;    // bloquea selección/movimiento de dibujos
+
+  // Settings drawer
+  settingsOpen: boolean;
+
   backtestMode: boolean;
   backtestYearStart: number;
   backtestYearEnd: number;
@@ -48,6 +55,11 @@ type State = {
   setActiveTool: (t: DrawingTool) => void;
   setSelectedDrawingId: (id: string | null) => void;
 
+  toggleChartLock: () => void;
+  toggleDrawingsLock: () => void;
+
+  toggleSettings: () => void;
+
   setBacktest: (on: boolean, yearStart?: number, yearEnd?: number) => void;
 };
 
@@ -68,6 +80,10 @@ export const useChartStore = create<State>()(
       activeTool: "none",
       selectedDrawingId: null,
 
+      chartLocked: false,
+      drawingsLocked: false,
+      settingsOpen: false,
+
       backtestMode: false,
       backtestYearStart: 2023,
       backtestYearEnd: 2024,
@@ -85,37 +101,42 @@ export const useChartStore = create<State>()(
       setSessions: (sessions) => set({ sessions }),
 
       addDrawing: (d) => set((s) => ({ drawings: [...s.drawings, d] })),
-
       updateDrawing: (id, patch) =>
         set((s) => ({
-          drawings: s.drawings.map((d) => (d.id === id ? ({ ...d, ...patch } as Drawing) : d)),
+          drawings: s.drawings.map((d) =>
+            d.id === id ? ({ ...d, ...patch } as Drawing) : d,
+          ),
         })),
-
       replaceDrawing: (id, next) =>
         set((s) => ({
           drawings: s.drawings.map((d) => (d.id === id ? next : d)),
         })),
-
       removeDrawing: (id) =>
         set((s) => ({
           drawings: s.drawings.filter((d) => d.id !== id),
           selectedDrawingId: s.selectedDrawingId === id ? null : s.selectedDrawingId,
         })),
-
       clearDrawings: () => set({ drawings: [], selectedDrawingId: null }),
-
       duplicateDrawing: (id) =>
         set((s) => {
           const orig = s.drawings.find((d) => d.id === id);
           if (!orig) return s;
           const copy = { ...orig, id: Math.random().toString(36).slice(2, 10) } as Drawing;
-          // Offset levemente para que no se superponga
           if (copy.kind === "hline") copy.price *= 1.001;
           return { drawings: [...s.drawings, copy], selectedDrawingId: copy.id };
         }),
 
       setActiveTool: (t) => set({ activeTool: t, selectedDrawingId: null }),
       setSelectedDrawingId: (id) => set({ selectedDrawingId: id }),
+
+      toggleChartLock: () => set((s) => ({ chartLocked: !s.chartLocked })),
+      toggleDrawingsLock: () =>
+        set((s) => ({
+          drawingsLocked: !s.drawingsLocked,
+          selectedDrawingId: null,
+        })),
+
+      toggleSettings: () => set((s) => ({ settingsOpen: !s.settingsOpen })),
 
       setBacktest: (on, yearStart, yearEnd) =>
         set({
@@ -133,6 +154,8 @@ export const useChartStore = create<State>()(
         indicators: s.indicators,
         sessions: s.sessions,
         drawings: s.drawings,
+        chartLocked: s.chartLocked,
+        drawingsLocked: s.drawingsLocked,
       }),
     },
   ),
